@@ -1,7 +1,6 @@
 package org.keycloak.gh.bot.email;
 
 import com.google.api.services.gmail.model.Message;
-import com.google.api.services.gmail.model.Thread;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -10,10 +9,12 @@ import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
+import org.keycloak.gh.bot.utils.Labels;
 import org.kohsuke.github.*;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -25,6 +26,10 @@ public class EmailSyncService {
     private static final String VISIBLE_MARKER_PREFIX = "**Gmail-Thread-ID:** ";
     private static final Pattern VISIBLE_MARKER_PATTERN = Pattern.compile("\\*\\*Gmail-Thread-ID:\\*\\*\\s*([a-f0-9]+)");
     private static final Pattern RAW_HEX_PATTERN = Pattern.compile("\\b([a-f0-9]{16})\\b");
+    private static final Pattern SIGNATURE_PATTERN = Pattern.compile("(?m)^--\\s*$|^You received this message because you are subscribed.*");
+
+    // Cache to prevent loops if reactions are 404ing
+    private final Set<Long> processedComments = ConcurrentHashMap.newKeySet();
 
     @ConfigProperty(name = "google.group.target") String targetGroup;
     @ConfigProperty(name = "gmail.user.email") String botEmail;
@@ -33,6 +38,10 @@ public class EmailSyncService {
     @Inject GmailAdapter gmail;
     @Inject EmailGitHubAdapter github;
     @Inject BotCommandService commandService;
+
+    // =========================================================================
+    // SYNC: GMAIL -> GITHUB
+    // =========================================================================
 
     @Scheduled(every = "60s")
     public void syncGmailToGitHub() {
@@ -60,19 +69,36 @@ public class EmailSyncService {
 
         String threadId = msg.getThreadId();
         String subject = gmail.getHeader(msg, "Subject");
-        String body = gmail.getBody(msg);
+        String cleanBody = sanitizeBody(gmail.getBody(msg));
 
         GHIssue existingIssue = github.findIssueByThreadId(threadId);
 
         if (existingIssue == null) {
-            String issueBody = body + "\n\n" + VISIBLE_MARKER_PREFIX + threadId;
-            github.createIssue(subject, issueBody);
+            String currentBotName = commandService.getBotName();
+            LOG.infof("🤖 Creating new Issue for Thread %s. Acting as Bot: '%s'", threadId, currentBotName);
+
+            String issueBody = cleanBody + "\n\n" + VISIBLE_MARKER_PREFIX + threadId;
+            GHIssue newIssue = github.createIssue(subject, issueBody);
+
+            if (newIssue != null) {
+                try {
+                    newIssue.addLabels(Labels.STATUS_TRIAGE);
+                } catch (IOException e) {
+                    LOG.warnf("Could not add default label: %s", e.getMessage());
+                }
+                LOG.infof("Created Issue #%d", newIssue.getNumber());
+            }
         } else {
-            String commentBody = "**Reply from " + from + ":**\n\n" + body;
+            String commentBody = "**Reply from " + from + ":**\n\n" + cleanBody;
             github.commentOnIssue(existingIssue, commentBody);
+            LOG.infof("Added comment to Issue #%d for Thread %s", existingIssue.getNumber(), threadId);
         }
         gmail.markAsRead(msg.getId());
     }
+
+    // =========================================================================
+    // SYNC: GITHUB -> GMAIL
+    // =========================================================================
 
     @Scheduled(every = "60s")
     public void syncGitHubToGmail() {
@@ -80,7 +106,11 @@ public class EmailSyncService {
         try {
             List<GHIssue> issues = github.getOpenIssues();
             String myLogin = commandService.getBotName();
-            if (myLogin == null) return; // GitHub provider might not be ready
+
+            if (myLogin == null || myLogin.isEmpty()) {
+                LOG.warn("Bot name is null. Skipping GitHub sync.");
+                return;
+            }
 
             for (GHIssue issue : issues) {
                 processIssueForCommands(issue, myLogin);
@@ -110,21 +140,29 @@ public class EmailSyncService {
                 BotCommandService.EmailRequest request = commandService.extractSecAlertData(commentBody);
                 if (request != null && !request.body().isEmpty()) {
                     String subjectToUse = (request.subject() != null) ? request.subject() : issue.getTitle();
-                    //TODO remove duplicates
                     success = sendEmailDirect(threadId, subjectToUse, request.body(), secAlertEmail, targetGroup);
                 }
             }
 
             if (success) {
-                comment.createReaction(ReactionContent.EYES);
+                processedComments.add(comment.getId());
+                try {
+                    comment.createReaction(ReactionContent.EYES);
+                } catch (Exception e) {
+                    LOG.warn("Failed to react to comment (API 404?), but email was sent.");
+                }
                 LOG.infof("✅ Command executed for Thread %s", threadId);
             }
         }
     }
 
+    // =========================================================================
+    // HELPERS & EMAIL LOGIC
+    // =========================================================================
+
     private boolean sendEmailReply(String threadId, String subject, String body) {
         try {
-            Thread thread = gmail.getThread(threadId);
+            com.google.api.services.gmail.model.Thread thread = gmail.getThread(threadId);
             if (thread == null || thread.getMessages() == null || thread.getMessages().isEmpty()) return false;
             Message targetMsg = findLastHumanMessage(thread.getMessages());
             if (targetMsg == null) return false;
@@ -150,7 +188,7 @@ public class EmailSyncService {
 
     private boolean sendEmailDirect(String threadId, String subject, String body, String to, String cc) {
         try {
-            Thread thread = gmail.getThread(threadId);
+            com.google.api.services.gmail.model.Thread thread = gmail.getThread(threadId);
             if (thread == null || thread.getMessages() == null) return false;
             Message targetMsg = findLastHumanMessage(thread.getMessages());
             if (targetMsg == null) targetMsg = thread.getMessages().get(thread.getMessages().size() - 1);
@@ -198,8 +236,20 @@ public class EmailSyncService {
     }
 
     private boolean hasAlreadyProcessed(GHIssueComment comment, String myLogin) throws IOException {
-        for (GHReaction reaction : comment.listReactions()) {
-            if (reaction.getContent() == ReactionContent.EYES && reaction.getUser().getLogin().equals(myLogin)) return true;
+        if (processedComments.contains(comment.getId())) return true;
+        try {
+            for (GHReaction reaction : comment.listReactions()) {
+                String reactionUser = reaction.getUser().getLogin();
+                // Check against BOTH the sanitized name ("anxiety42-bot") and the system name ("anxiety42-bot[bot]")
+                if (reaction.getContent() == ReactionContent.EYES &&
+                        (reactionUser.equalsIgnoreCase(myLogin) || reactionUser.equalsIgnoreCase(myLogin + "[bot]"))) {
+
+                    processedComments.add(comment.getId());
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            // 404 on reaction fetch shouldn't block processing
         }
         return false;
     }
@@ -210,6 +260,15 @@ public class EmailSyncService {
         if (m.find()) return m.group(1).trim();
         Matcher raw = RAW_HEX_PATTERN.matcher(text);
         return raw.find() ? raw.group(1) : null;
+    }
+
+    private String sanitizeBody(String body) {
+        if (body == null) return "";
+        Matcher matcher = SIGNATURE_PATTERN.matcher(body);
+        if (matcher.find()) {
+            return body.substring(0, matcher.start()).trim();
+        }
+        return body.trim();
     }
 
     private List<InternetAddress> determineReplyRecipients(Message targetMsg) {

@@ -14,6 +14,8 @@ public class BotCommandService {
 
     private static final String CMD_REPLY_ALL = "reply-all";
     private static final String CMD_EMAIL_SECALERT = "e-mail-secalert";
+
+    // Pattern to extract optional "Subject" in quotes and the rest as body
     private static final Pattern SUBJECT_BODY_PATTERN = Pattern.compile("^(?:\"([^\"]+)\")?\\s*(.*)", Pattern.DOTALL);
 
     public boolean isReplyAllCommand(String text) {
@@ -39,19 +41,34 @@ public class BotCommandService {
         return new EmailRequest(null, rawContent.trim());
     }
 
+    /**
+     * Returns the "human-friendly" bot name.
+     * If GitHub reports "anxiety42-bot[bot]", this returns "anxiety42-bot".
+     */
     public String getBotName() {
-        return gitHubProvider.getBotLogin();
+        String login = gitHubProvider.getBotLogin();
+        if (login != null && login.endsWith("[bot]")) {
+            return login.replace("[bot]", "");
+        }
+        return login;
     }
 
     private boolean hasCommand(String text, String command) {
-        return text != null && text.contains("@" + getBotName() + " " + command);
+        if (text == null) return false;
+        // Case-insensitive check for @botname command
+        String pattern = "(?i)@" + Pattern.quote(getBotName()) + "\\s+" + Pattern.quote(command);
+        return Pattern.compile(pattern).matcher(text).find();
     }
 
     private String extractContent(String text, String command) {
-        String trigger = "@" + getBotName() + " " + command;
-        int index = text.indexOf(trigger);
-        if (index == -1) return "";
-        return text.substring(index + trigger.length()).trim();
+        // Matches the same pattern to find where the content starts
+        String patternStr = "(?i)@" + Pattern.quote(getBotName()) + "\\s+" + Pattern.quote(command);
+        Pattern p = Pattern.compile(patternStr);
+        Matcher m = p.matcher(text);
+        if (m.find()) {
+            return text.substring(m.end()).trim();
+        }
+        return "";
     }
 
     public record EmailRequest(String subject, String body) {}
