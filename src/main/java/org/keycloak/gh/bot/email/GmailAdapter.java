@@ -9,6 +9,7 @@ import com.google.api.services.gmail.model.ModifyMessageRequest;
 import com.google.api.services.gmail.model.Thread;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 import jakarta.mail.internet.MimeMessage;
@@ -27,10 +28,15 @@ public class GmailAdapter {
     @Inject
     Gmail gmail;
 
+    // FIX: Limit the number of messages per run to prevent blocking the thread > 60s
+    @ConfigProperty(name = "gmail.batch.size", defaultValue = "20")
+    long batchSize;
+
     public List<Message> fetchUnreadMessages(String query) {
         try {
             ListMessagesResponse listResponse = gmail.users().messages().list("me")
                     .setQ(query)
+                    .setMaxResults(batchSize) // FIX: Enforce batch limit
                     .execute();
             return listResponse.getMessages() != null ? listResponse.getMessages() : Collections.emptyList();
         } catch (IOException e) {
@@ -108,22 +114,18 @@ public class GmailAdapter {
         if (parts == null) return Optional.empty();
 
         for (MessagePart part : parts) {
-            // "Yoda Condition" to avoid NPE on getMimeType()
             if ("text/plain".equals(part.getMimeType()) && part.getBody().getData() != null) {
                 String decoded = new String(Base64.getUrlDecoder().decode(part.getBody().getData()));
                 return Optional.of(decoded);
             }
 
-            // Recursive step
             if (part.getParts() != null) {
                 Optional<String> result = getPartsBody(part.getParts());
-                // If we found something down the tree, return it immediately
                 if (result.isPresent()) {
                     return result;
                 }
             }
         }
-
         return Optional.empty();
     }
 }

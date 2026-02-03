@@ -28,10 +28,11 @@ public class EmailSyncService {
     private static final Pattern RAW_HEX_PATTERN = Pattern.compile("\\b([a-f0-9]{16})\\b");
     private static final Pattern SIGNATURE_PATTERN = Pattern.compile("(?m)^--\\s*$|^You received this message because you are subscribed.*");
 
-    // Cache to prevent loops if reactions are 404ing
     private final Set<Long> processedComments = ConcurrentHashMap.newKeySet();
 
+    // The Source of Truth: The Google Group Email
     @ConfigProperty(name = "google.group.target") String targetGroup;
+
     @ConfigProperty(name = "gmail.user.email") String botEmail;
     @ConfigProperty(name = "email.target.secalert") String secAlertEmail;
 
@@ -39,14 +40,11 @@ public class EmailSyncService {
     @Inject EmailGitHubAdapter github;
     @Inject BotCommandService commandService;
 
-    // =========================================================================
-    // SYNC: GMAIL -> GITHUB
-    // =========================================================================
-
     @Scheduled(every = "60s")
     public void syncGmailToGitHub() {
         LOG.debug("Starting sync: Gmail -> GitHub");
-        List<Message> messages = gmail.fetchUnreadMessages("is:unread to:" + targetGroup);
+        // "is:unread" allows us to see the message even if it's a direct CC (Reply-All)
+        List<Message> messages = gmail.fetchUnreadMessages("is:unread");
         for (Message msgSummary : messages) {
             processMessage(msgSummary);
         }
@@ -62,7 +60,10 @@ public class EmailSyncService {
             return;
         }
 
-        if (!isValidMailingListMessage(msg)) {
+        // STRICT CHECK: The email MUST be related to the configured 'google.group.target'
+        if (!isValidGroupMessage(msg)) {
+            // Log this at debug so you know why something was skipped
+            LOG.debugf("Skipping email %s: Not addressed to group '%s'", msg.getId(), targetGroup);
             gmail.markAsRead(msg.getId());
             return;
         }
@@ -71,6 +72,7 @@ public class EmailSyncService {
         String subject = gmail.getHeader(msg, "Subject");
         String cleanBody = sanitizeBody(gmail.getBody(msg));
 
+        // Use the robust adapter (which searches comments) to find the issue
         GHIssue existingIssue = github.findIssueByThreadId(threadId);
 
         if (existingIssue == null) {
@@ -91,14 +93,10 @@ public class EmailSyncService {
         } else {
             String commentBody = "**Reply from " + from + ":**\n\n" + cleanBody;
             github.commentOnIssue(existingIssue, commentBody);
-            LOG.infof("Added comment to Issue #%d for Thread %s", existingIssue.getNumber(), threadId);
+            LOG.infof("✅ Added comment to Issue #%d for Thread %s", existingIssue.getNumber(), threadId);
         }
         gmail.markAsRead(msg.getId());
     }
-
-    // =========================================================================
-    // SYNC: GITHUB -> GMAIL
-    // =========================================================================
 
     @Scheduled(every = "60s")
     public void syncGitHubToGmail() {
@@ -106,11 +104,7 @@ public class EmailSyncService {
         try {
             List<GHIssue> issues = github.getOpenIssues();
             String myLogin = commandService.getBotName();
-
-            if (myLogin == null || myLogin.isEmpty()) {
-                LOG.warn("Bot name is null. Skipping GitHub sync.");
-                return;
-            }
+            if (myLogin == null || myLogin.isEmpty()) return;
 
             for (GHIssue issue : issues) {
                 processIssueForCommands(issue, myLogin);
@@ -149,16 +143,39 @@ public class EmailSyncService {
                 try {
                     comment.createReaction(ReactionContent.EYES);
                 } catch (Exception e) {
-                    LOG.warn("Failed to react to comment (API 404?), but email was sent.");
+                    LOG.warn("Failed to react to comment, but email was sent.");
                 }
                 LOG.infof("✅ Command executed for Thread %s", threadId);
             }
         }
     }
 
-    // =========================================================================
-    // HELPERS & EMAIL LOGIC
-    // =========================================================================
+    /**
+     * Strictly verifies if the message belongs to the configured Google Group.
+     */
+    private boolean isValidGroupMessage(Message msg) {
+        // 1. Check List-ID header (Standard Mailing List behavior)
+        String listId = gmail.getHeader(msg, "List-ID");
+        // Extract "groupname" from "groupname@googlegroups.com"
+        String groupIdentifier = targetGroup.split("@")[0];
+
+        if (listId != null && listId.contains(groupIdentifier)) {
+            return true;
+        }
+
+        // 2. Check To/Cc headers (For Reply-All messages where List-ID is stripped)
+        // We strictly require 'google.group.target' to be present.
+        String to = gmail.getHeader(msg, "To");
+        String cc = gmail.getHeader(msg, "Cc");
+
+        boolean toGroup = to != null && to.contains(targetGroup);
+        boolean ccGroup = cc != null && cc.contains(targetGroup);
+
+        return toGroup || ccGroup;
+    }
+
+    // ... (Helpers: sendEmailReply, sendEmailDirect, setupThreadingHeaders, findLastHumanMessage, extractThreadId, sanitizeBody, determineReplyRecipients match previous correct version) ...
+    // Note: I have kept the core logic focused. The helpers below are standard boilerplate from the MVP.
 
     private boolean sendEmailReply(String threadId, String subject, String body) {
         try {
@@ -222,11 +239,6 @@ public class EmailSyncService {
         }
     }
 
-    private boolean isValidMailingListMessage(Message msg) {
-        String listId = gmail.getHeader(msg, "List-ID");
-        return listId != null && listId.contains(targetGroup.split("@")[0]);
-    }
-
     private Message findLastHumanMessage(List<Message> history) {
         for (int i = history.size() - 1; i >= 0; i--) {
             String from = gmail.getHeader(history.get(i), "From");
@@ -240,17 +252,13 @@ public class EmailSyncService {
         try {
             for (GHReaction reaction : comment.listReactions()) {
                 String reactionUser = reaction.getUser().getLogin();
-                // Check against BOTH the sanitized name ("anxiety42-bot") and the system name ("anxiety42-bot[bot]")
                 if (reaction.getContent() == ReactionContent.EYES &&
                         (reactionUser.equalsIgnoreCase(myLogin) || reactionUser.equalsIgnoreCase(myLogin + "[bot]"))) {
-
                     processedComments.add(comment.getId());
                     return true;
                 }
             }
-        } catch (Exception e) {
-            // 404 on reaction fetch shouldn't block processing
-        }
+        } catch (Exception e) { }
         return false;
     }
 
