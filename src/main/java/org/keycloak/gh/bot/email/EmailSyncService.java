@@ -24,15 +24,18 @@ public class EmailSyncService {
     private static final Logger LOG = Logger.getLogger(EmailSyncService.class);
 
     private static final String VISIBLE_MARKER_PREFIX = "**Gmail-Thread-ID:** ";
+    // Matches "**Gmail-Thread-ID:** 12345"
     private static final Pattern VISIBLE_MARKER_PATTERN = Pattern.compile("\\*\\*Gmail-Thread-ID:\\*\\*\\s*([a-f0-9]+)");
+    // Matches raw "1234567890abcdef" anywhere (Fallback)
     private static final Pattern RAW_HEX_PATTERN = Pattern.compile("\\b([a-f0-9]{16})\\b");
     private static final Pattern SIGNATURE_PATTERN = Pattern.compile("(?m)^--\\s*$|^You received this message because you are subscribed.*");
 
+    private static final String ISSUE_DESCRIPTION_TEMPLATE =
+            "_Thread originally started in the keycloak-security mailing list. Replace the content here by a proper description._";
+
     private final Set<Long> processedComments = ConcurrentHashMap.newKeySet();
 
-    // The Source of Truth: The Google Group Email
     @ConfigProperty(name = "google.group.target") String targetGroup;
-
     @ConfigProperty(name = "gmail.user.email") String botEmail;
     @ConfigProperty(name = "email.target.secalert") String secAlertEmail;
 
@@ -40,13 +43,30 @@ public class EmailSyncService {
     @Inject EmailGitHubAdapter github;
     @Inject BotCommandService commandService;
 
+    // 1. INCOMING EMAILS (60s)
     @Scheduled(every = "60s")
     public void syncGmailToGitHub() {
         LOG.debug("Starting sync: Gmail -> GitHub");
-        // "is:unread" allows us to see the message even if it's a direct CC (Reply-All)
         List<Message> messages = gmail.fetchUnreadMessages("is:unread");
         for (Message msgSummary : messages) {
             processMessage(msgSummary);
+        }
+    }
+
+    // 2. BOT COMMANDS & FEEDBACK (10s)
+    @Scheduled(every = "10s")
+    public void processGitHubCommands() {
+        LOG.debug("Polling GitHub for new commands...");
+        try {
+            List<GHIssue> issues = github.getOpenIssues();
+            String myLogin = commandService.getBotName();
+            if (myLogin == null || myLogin.isEmpty()) return;
+
+            for (GHIssue issue : issues) {
+                processIssueForCommands(issue, myLogin);
+            }
+        } catch (Exception e) {
+            LOG.error("Error processing GitHub commands", e);
         }
     }
 
@@ -60,174 +80,198 @@ public class EmailSyncService {
             return;
         }
 
-        // STRICT CHECK: The email MUST be related to the configured 'google.group.target'
         if (!isValidGroupMessage(msg)) {
-            // Log this at debug so you know why something was skipped
-            LOG.debugf("Skipping email %s: Not addressed to group '%s'", msg.getId(), targetGroup);
             gmail.markAsRead(msg.getId());
             return;
         }
 
         String threadId = msg.getThreadId();
         String subject = gmail.getHeader(msg, "Subject");
-        String cleanBody = sanitizeBody(gmail.getBody(msg));
+        String cleanBody = sanitizeBody(gmail.getBody(msg)).orElse("(No content)");
 
-        // Use the robust adapter (which searches comments) to find the issue
-        GHIssue existingIssue = github.findIssueByThreadId(threadId);
+        github.findIssueByThreadId(threadId).ifPresentOrElse(
+                existingIssue -> {
+                    String commentBody = "**Reply from " + from + ":**\n\n" + cleanBody;
+                    github.commentOnIssue(existingIssue, commentBody);
+                    LOG.infof("✅ Added comment to Issue #%d for Thread %s", existingIssue.getNumber(), threadId);
+                },
+                () -> {
+                    String currentBotName = commandService.getBotName();
+                    LOG.infof("🤖 Creating new Issue for Thread %s", threadId);
 
-        if (existingIssue == null) {
-            String currentBotName = commandService.getBotName();
-            LOG.infof("🤖 Creating new Issue for Thread %s. Acting as Bot: '%s'", threadId, currentBotName);
+                    GHIssue newIssue = github.createIssue(subject, ISSUE_DESCRIPTION_TEMPLATE);
+                    if (newIssue != null) {
+                        try { newIssue.addLabels(Labels.STATUS_TRIAGE); } catch (Exception e) {}
 
-            String issueBody = cleanBody + "\n\n" + VISIBLE_MARKER_PREFIX + threadId;
-            GHIssue newIssue = github.createIssue(subject, issueBody);
-
-            if (newIssue != null) {
-                try {
-                    newIssue.addLabels(Labels.STATUS_TRIAGE);
-                } catch (IOException e) {
-                    LOG.warnf("Could not add default label: %s", e.getMessage());
+                        String firstComment = VISIBLE_MARKER_PREFIX + threadId + "\n" +
+                                "**From:** " + from + "\n\n" +
+                                cleanBody;
+                        github.commentOnIssue(newIssue, firstComment);
+                        LOG.infof("Created Issue #%d", newIssue.getNumber());
+                    }
                 }
-                LOG.infof("Created Issue #%d", newIssue.getNumber());
-            }
-        } else {
-            String commentBody = "**Reply from " + from + ":**\n\n" + cleanBody;
-            github.commentOnIssue(existingIssue, commentBody);
-            LOG.infof("✅ Added comment to Issue #%d for Thread %s", existingIssue.getNumber(), threadId);
-        }
+        );
         gmail.markAsRead(msg.getId());
     }
 
-    @Scheduled(every = "60s")
-    public void syncGitHubToGmail() {
-        LOG.debug("Starting sync: GitHub -> Gmail");
-        try {
-            List<GHIssue> issues = github.getOpenIssues();
-            String myLogin = commandService.getBotName();
-            if (myLogin == null || myLogin.isEmpty()) return;
-
-            for (GHIssue issue : issues) {
-                processIssueForCommands(issue, myLogin);
-            }
-        } catch (Exception e) {
-            LOG.error("Error in syncGitHubToGmail", e);
-        }
-    }
-
     private void processIssueForCommands(GHIssue issue, String myLogin) throws IOException {
-        String threadId = extractThreadId(issue.getBody());
-        if (threadId == null || threadId.isEmpty()) return;
+        Optional<String> threadIdOpt = findThreadIdInComments(issue);
 
         for (GHIssueComment comment : issue.getComments()) {
             if (hasAlreadyProcessed(comment, myLogin)) continue;
 
-            boolean success = false;
-            String commentBody = comment.getBody();
+            commandService.parse(comment.getBody()).ifPresent(cmd -> {
+                boolean success = false;
+                ReactionContent reaction = ReactionContent.EYES;
 
-            if (commandService.isReplyAllCommand(commentBody)) {
-                String content = commandService.extractReplyContent(commentBody);
-                if (!content.isEmpty()) {
-                    success = sendEmailReply(threadId, issue.getTitle(), content);
+                switch (cmd.type()) {
+                    case REPLY_GROUP:
+                        if (threadIdOpt.isPresent()) {
+                            success = sendReplyToGroupOnly(threadIdOpt.get(), issue.getTitle(), cmd.body());
+                        } else {
+                            replyWithError(issue, comment, "❌ Error: I cannot find the Gmail Thread ID in this issue's comments. I don't know which email thread to reply to.");
+                            success = true; // Mark handled (as error)
+                            reaction = ReactionContent.CONFUSED;
+                        }
+                        break;
+                    case REPLY_SENDER:
+                        if (threadIdOpt.isPresent()) {
+                            success = sendReplyToSenderAndGroup(threadIdOpt.get(), issue.getTitle(), cmd.body());
+                        } else {
+                            replyWithError(issue, comment, "❌ Error: I cannot find the Gmail Thread ID in this issue's comments.");
+                            success = true;
+                            reaction = ReactionContent.CONFUSED;
+                        }
+                        break;
+                    case NEW_SECALERT:
+                        success = sendNewEmail(secAlertEmail, cmd.subject().orElse("No Subject"), cmd.body());
+                        break;
+                    case UNKNOWN:
+                        sendHelpMessage(issue, comment);
+                        success = true;
+                        reaction = ReactionContent.CONFUSED;
+                        break;
                 }
-            }
-            else if (commandService.isEmailSecAlertCommand(commentBody)) {
-                BotCommandService.EmailRequest request = commandService.extractSecAlertData(commentBody);
-                if (request != null && !request.body().isEmpty()) {
-                    String subjectToUse = (request.subject() != null) ? request.subject() : issue.getTitle();
-                    success = sendEmailDirect(threadId, subjectToUse, request.body(), secAlertEmail, targetGroup);
-                }
-            }
 
-            if (success) {
-                processedComments.add(comment.getId());
-                try {
-                    comment.createReaction(ReactionContent.EYES);
-                } catch (Exception e) {
-                    LOG.warn("Failed to react to comment, but email was sent.");
+                if (success) {
+                    processedComments.add(comment.getId());
+                    try { comment.createReaction(reaction); } catch (Exception e) { LOG.warn("Failed to react"); }
+                    LOG.infof("✅ Command executed: %s", cmd.type());
                 }
-                LOG.infof("✅ Command executed for Thread %s", threadId);
-            }
+            });
         }
     }
 
-    /**
-     * Strictly verifies if the message belongs to the configured Google Group.
-     */
-    private boolean isValidGroupMessage(Message msg) {
-        // 1. Check List-ID header (Standard Mailing List behavior)
-        String listId = gmail.getHeader(msg, "List-ID");
-        // Extract "groupname" from "groupname@googlegroups.com"
-        String groupIdentifier = targetGroup.split("@")[0];
-
-        if (listId != null && listId.contains(groupIdentifier)) {
-            return true;
+    private void replyWithError(GHIssue issue, GHIssueComment comment, String message) {
+        try {
+            String userLogin = comment.getUser().getLogin();
+            github.commentOnIssue(issue, "@" + userLogin + " " + message);
+        } catch (IOException e) {
+            LOG.error("Failed to send error reply", e);
         }
+    }
 
-        // 2. Check To/Cc headers (For Reply-All messages where List-ID is stripped)
-        // We strictly require 'google.group.target' to be present.
+    private void sendHelpMessage(GHIssue issue, GHIssueComment comment) {
+        try {
+            String userLogin = comment.getUser().getLogin();
+            String body = "@" + userLogin + " " + commandService.getHelpMessage();
+            github.commentOnIssue(issue, body);
+        } catch (IOException e) {
+            LOG.error("Failed to send help message", e);
+        }
+    }
+
+    private Optional<String> findThreadIdInComments(GHIssue issue) throws IOException {
+        for (GHIssueComment comment : issue.getComments()) {
+            Optional<String> id = extractThreadId(comment.getBody());
+            if (id.isPresent()) return id;
+        }
+        return Optional.empty();
+    }
+
+    // FIX: Fallback to raw hex if the pretty markdown pattern isn't found
+    private Optional<String> extractThreadId(String text) {
+        if (text == null) return Optional.empty();
+
+        // 1. Try Strict Markdown Pattern
+        Matcher m = VISIBLE_MARKER_PATTERN.matcher(text);
+        if (m.find()) return Optional.of(m.group(1).trim());
+
+        // 2. Try Raw Hex Pattern (Fallback)
+        Matcher raw = RAW_HEX_PATTERN.matcher(text);
+        if (raw.find()) return Optional.of(raw.group(1).trim());
+
+        return Optional.empty();
+    }
+
+    private Optional<String> sanitizeBody(String body) {
+        if (body == null || body.isBlank()) return Optional.empty();
+        Matcher matcher = SIGNATURE_PATTERN.matcher(body);
+        if (matcher.find()) {
+            String trimmed = body.substring(0, matcher.start()).trim();
+            return trimmed.isEmpty() ? Optional.empty() : Optional.of(trimmed);
+        }
+        String trimmed = body.trim();
+        return trimmed.isEmpty() ? Optional.empty() : Optional.of(trimmed);
+    }
+
+    // ... (Helpers: isValidGroupMessage, sendReplyToGroupOnly, sendReplyToSenderAndGroup, sendNewEmail, setupThreadingHeaders, findLastHumanMessage, hasAlreadyProcessed match previous implementation) ...
+
+    private boolean isValidGroupMessage(Message msg) {
+        String listId = gmail.getHeader(msg, "List-ID");
+        String groupIdentifier = targetGroup.split("@")[0];
+        if (listId != null && listId.contains(groupIdentifier)) return true;
         String to = gmail.getHeader(msg, "To");
         String cc = gmail.getHeader(msg, "Cc");
-
-        boolean toGroup = to != null && to.contains(targetGroup);
-        boolean ccGroup = cc != null && cc.contains(targetGroup);
-
-        return toGroup || ccGroup;
+        return (to != null && to.contains(targetGroup)) || (cc != null && cc.contains(targetGroup));
     }
 
-    // ... (Helpers: sendEmailReply, sendEmailDirect, setupThreadingHeaders, findLastHumanMessage, extractThreadId, sanitizeBody, determineReplyRecipients match previous correct version) ...
-    // Note: I have kept the core logic focused. The helpers below are standard boilerplate from the MVP.
-
-    private boolean sendEmailReply(String threadId, String subject, String body) {
+    private boolean sendReplyToGroupOnly(String threadId, String subject, String body) {
         try {
             com.google.api.services.gmail.model.Thread thread = gmail.getThread(threadId);
-            if (thread == null || thread.getMessages() == null || thread.getMessages().isEmpty()) return false;
+            if (thread == null || thread.getMessages() == null) return false;
             Message targetMsg = findLastHumanMessage(thread.getMessages());
             if (targetMsg == null) return false;
-
             MimeMessage email = new MimeMessage(Session.getDefaultInstance(new Properties(), null));
             setupThreadingHeaders(email, targetMsg);
-
-            List<InternetAddress> recipients = determineReplyRecipients(targetMsg);
-            for (InternetAddress addr : recipients) {
-                email.addRecipient(jakarta.mail.Message.RecipientType.TO, addr);
-            }
-
+            email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(targetGroup));
             email.setFrom(new InternetAddress(botEmail));
             email.setSubject(subject.startsWith("Re:") ? subject : "Re: " + subject);
             email.setText(body);
             gmail.sendMessage(threadId, email);
             return true;
-        } catch (Exception e) {
-            LOG.error("Failed to send reply email", e);
-            return false;
-        }
+        } catch (Exception e) { LOG.error("Failed to send reply to group", e); return false; }
     }
 
-    private boolean sendEmailDirect(String threadId, String subject, String body, String to, String cc) {
+    private boolean sendReplyToSenderAndGroup(String threadId, String subject, String body) {
         try {
             com.google.api.services.gmail.model.Thread thread = gmail.getThread(threadId);
             if (thread == null || thread.getMessages() == null) return false;
             Message targetMsg = findLastHumanMessage(thread.getMessages());
-            if (targetMsg == null) targetMsg = thread.getMessages().get(thread.getMessages().size() - 1);
-
+            if (targetMsg == null) return false;
             MimeMessage email = new MimeMessage(Session.getDefaultInstance(new Properties(), null));
             setupThreadingHeaders(email, targetMsg);
+            String sender = gmail.getHeader(targetMsg, "From");
+            if (sender != null) email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(sender));
+            email.addRecipient(jakarta.mail.Message.RecipientType.CC, new InternetAddress(targetGroup));
+            email.setFrom(new InternetAddress(botEmail));
+            email.setSubject(subject.startsWith("Re:") ? subject : "Re: " + subject);
+            email.setText(body);
+            gmail.sendMessage(threadId, email);
+            return true;
+        } catch (Exception e) { LOG.error("Failed to send reply to sender+group", e); return false; }
+    }
 
+    private boolean sendNewEmail(String to, String subject, String body) {
+        try {
+            MimeMessage email = new MimeMessage(Session.getDefaultInstance(new Properties(), null));
             email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(to));
-            if (cc != null && !cc.isEmpty()) {
-                email.addRecipient(jakarta.mail.Message.RecipientType.CC, new InternetAddress(cc));
-            }
-
             email.setFrom(new InternetAddress(botEmail));
             email.setSubject(subject);
             email.setText(body);
-
-            gmail.sendMessage(threadId, email);
+            gmail.sendMessage(null, email);
             return true;
-        } catch (Exception e) {
-            LOG.error("Failed to send direct email", e);
-            return false;
-        }
+        } catch (Exception e) { LOG.error("Failed to send new email", e); return false; }
     }
 
     private void setupThreadingHeaders(MimeMessage email, Message targetMsg) throws Exception {
@@ -252,7 +296,7 @@ public class EmailSyncService {
         try {
             for (GHReaction reaction : comment.listReactions()) {
                 String reactionUser = reaction.getUser().getLogin();
-                if (reaction.getContent() == ReactionContent.EYES &&
+                if ((reaction.getContent() == ReactionContent.EYES || reaction.getContent() == ReactionContent.CONFUSED) &&
                         (reactionUser.equalsIgnoreCase(myLogin) || reactionUser.equalsIgnoreCase(myLogin + "[bot]"))) {
                     processedComments.add(comment.getId());
                     return true;
@@ -260,51 +304,5 @@ public class EmailSyncService {
             }
         } catch (Exception e) { }
         return false;
-    }
-
-    private String extractThreadId(String text) {
-        if (text == null) return null;
-        Matcher m = VISIBLE_MARKER_PATTERN.matcher(text);
-        if (m.find()) return m.group(1).trim();
-        Matcher raw = RAW_HEX_PATTERN.matcher(text);
-        return raw.find() ? raw.group(1) : null;
-    }
-
-    private String sanitizeBody(String body) {
-        if (body == null) return "";
-        Matcher matcher = SIGNATURE_PATTERN.matcher(body);
-        if (matcher.find()) {
-            return body.substring(0, matcher.start()).trim();
-        }
-        return body.trim();
-    }
-
-    private List<InternetAddress> determineReplyRecipients(Message targetMsg) {
-        Map<String, InternetAddress> map = new HashMap<>();
-        try {
-            InternetAddress group = new InternetAddress(targetGroup);
-            map.put(group.getAddress().toLowerCase(), group);
-            String from = gmail.getHeader(targetMsg, "From");
-            String replyTo = gmail.getHeader(targetMsg, "Reply-To");
-
-            if (from != null && from.toLowerCase().contains(group.getAddress().toLowerCase())) {
-                addRecipientsToMap(map, replyTo);
-            } else {
-                addRecipientsToMap(map, from);
-            }
-            addRecipientsToMap(map, gmail.getHeader(targetMsg, "To"));
-            addRecipientsToMap(map, gmail.getHeader(targetMsg, "Cc"));
-            map.remove(botEmail.toLowerCase());
-        } catch (Exception e) { LOG.error(e); }
-        return new ArrayList<>(map.values());
-    }
-
-    private void addRecipientsToMap(Map<String, InternetAddress> map, String header) {
-        if (header == null || header.isEmpty()) return;
-        try {
-            for (InternetAddress addr : InternetAddress.parse(header)) {
-                map.put(addr.getAddress().toLowerCase(), addr);
-            }
-        } catch (Exception e) {}
     }
 }

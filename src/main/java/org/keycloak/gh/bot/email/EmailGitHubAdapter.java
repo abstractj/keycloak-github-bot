@@ -9,6 +9,7 @@ import org.kohsuke.github.*;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 
 @ApplicationScoped
 public class EmailGitHubAdapter {
@@ -24,6 +25,9 @@ public class EmailGitHubAdapter {
 
     private GHRepository getRepository() throws IOException {
         String fullRepoName = gitHubProvider.getRepositoryFullName();
+        if (fullRepoName == null) {
+            throw new IllegalStateException("Repository name is null.");
+        }
         return getGitHub().getRepository(fullRepoName);
     }
 
@@ -47,19 +51,27 @@ public class EmailGitHubAdapter {
         }
     }
 
-    public GHIssue findIssueByThreadId(String threadId) {
+    /**
+     * Searches for an issue containing the Gmail Thread ID.
+     * @return Optional containing the issue if found, empty otherwise.
+     */
+    public Optional<GHIssue> findIssueByThreadId(String threadId) {
         try {
             String repoName = gitHubProvider.getRepositoryFullName();
-            String query = String.format("repo:%s \"%s\" in:body type:issue", repoName, threadId);
+            if (repoName == null) return Optional.empty();
+
+            String query = String.format("repo:%s \"%s\" in:comments type:issue", repoName, threadId);
+            LOG.debugf("🔍 Searching for thread in comments: [%s]", query);
 
             PagedSearchIterable<GHIssue> issues = getGitHub().searchIssues().q(query).list();
+
             if (issues.getTotalCount() > 0) {
-                return issues.iterator().next();
+                return Optional.of(issues.iterator().next());
             }
         } catch (Exception e) {
             LOG.warnf("Search failed for thread %s: %s", threadId, e.getMessage());
         }
-        return null;
+        return Optional.empty();
     }
 
     public List<GHIssue> getOpenIssues() {

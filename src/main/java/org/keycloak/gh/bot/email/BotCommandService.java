@@ -3,6 +3,7 @@ package org.keycloak.gh.bot.email;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.keycloak.gh.bot.GitHubInstallationProvider;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -12,64 +13,96 @@ public class BotCommandService {
     @Inject
     GitHubInstallationProvider gitHubProvider;
 
-    private static final String CMD_REPLY_ALL = "reply-all";
-    private static final String CMD_EMAIL_SECALERT = "e-mail-secalert";
-
-    // Pattern to extract optional "Subject" in quotes and the rest as body
-    private static final Pattern SUBJECT_BODY_PATTERN = Pattern.compile("^(?:\"([^\"]+)\")?\\s*(.*)", Pattern.DOTALL);
-
-    public boolean isReplyAllCommand(String text) {
-        return hasCommand(text, CMD_REPLY_ALL);
+    public enum CommandType {
+        REPLY_GROUP,    // /reply keycloak-security
+        REPLY_SENDER,   // /reply sender
+        NEW_SECALERT,   // /new secalert
+        UNKNOWN         // @bot anything-else
     }
 
-    public boolean isEmailSecAlertCommand(String text) {
-        return hasCommand(text, CMD_EMAIL_SECALERT);
-    }
-
-    public String extractReplyContent(String text) {
-        return extractContent(text, CMD_REPLY_ALL);
-    }
-
-    public EmailRequest extractSecAlertData(String text) {
-        String rawContent = extractContent(text, CMD_EMAIL_SECALERT);
-        if (rawContent.isEmpty()) return null;
-
-        Matcher matcher = SUBJECT_BODY_PATTERN.matcher(rawContent);
-        if (matcher.find()) {
-            return new EmailRequest(matcher.group(1), matcher.group(2).trim());
+    public record Command(CommandType type, Optional<String> subject, String body) {
+        public Command {
+            if (type == null) throw new IllegalArgumentException("CommandType cannot be null");
+            if (subject == null) throw new IllegalArgumentException("Subject Optional cannot be null");
+            if (body == null) throw new IllegalArgumentException("Body cannot be null");
         }
-        return new EmailRequest(null, rawContent.trim());
     }
 
-    /**
-     * Returns the "human-friendly" bot name.
-     * If GitHub reports "anxiety42-bot[bot]", this returns "anxiety42-bot".
-     */
+    public Optional<Command> parse(String text) {
+        if (text == null || text.isBlank()) return Optional.empty();
+
+        String botName = Pattern.quote(getBotName());
+        String trimmedText = text.trim();
+
+        // 0. Check for bot mention at start of any line
+        Pattern mentionStartOfLine = Pattern.compile("(?mi)^@" + botName + "\\b");
+        if (!mentionStartOfLine.matcher(trimmedText).find()) {
+            return Optional.empty();
+        }
+
+        // 1. /reply keycloak-security
+        // STRICT: Enforces newline ([\r\n]+) before body capture
+        Pattern replyGroup = Pattern.compile("(?msi)^@" + botName + "\\s+/reply\\s+keycloak-security\\s*[\r\n]+(.*)");
+        Matcher mGroup = replyGroup.matcher(trimmedText);
+        if (mGroup.find()) {
+            String body = mGroup.group(1).trim();
+            return body.isEmpty() ? Optional.empty() : Optional.of(new Command(CommandType.REPLY_GROUP, Optional.empty(), body));
+        }
+
+        // 2. /reply sender
+        // STRICT: Enforces newline ([\r\n]+) before body capture
+        Pattern replySender = Pattern.compile("(?msi)^@" + botName + "\\s+/reply\\s+sender\\s*[\r\n]+(.*)");
+        Matcher mSender = replySender.matcher(trimmedText);
+        if (mSender.find()) {
+            String body = mSender.group(1).trim();
+            return body.isEmpty() ? Optional.empty() : Optional.of(new Command(CommandType.REPLY_SENDER, Optional.empty(), body));
+        }
+
+        // 3. /new secalert "Subject"
+        // STRICT: Enforces newline ([\r\n]+) before body capture
+        Pattern newSecAlert = Pattern.compile("(?msi)^@" + botName + "\\s+/new\\s+secalert\\s+\"([^\"]+)\"\\s*[\r\n]+(.*)");
+        Matcher mSecAlert = newSecAlert.matcher(trimmedText);
+        if (mSecAlert.find()) {
+            String subject = mSecAlert.group(1).trim();
+            String body = mSecAlert.group(2).trim();
+            if (subject.isEmpty() || body.isEmpty()) return Optional.empty();
+            return Optional.of(new Command(CommandType.NEW_SECALERT, Optional.of(subject), body));
+        }
+
+        // 4. FALLBACK: UNKNOWN COMMAND
+        // Catches lines starting with @bot that didn't match the strict regexes above
+        if (mentionStartOfLine.matcher(trimmedText).find()) {
+            return Optional.of(new Command(CommandType.UNKNOWN, Optional.empty(), trimmedText));
+        }
+
+        return Optional.empty();
+    }
+
     public String getBotName() {
         String login = gitHubProvider.getBotLogin();
-        if (login != null && login.endsWith("[bot]")) {
+        if (login == null) return "unknown-bot";
+        if (login.endsWith("[bot]")) {
             return login.replace("[bot]", "");
         }
         return login;
     }
 
-    private boolean hasCommand(String text, String command) {
-        if (text == null) return false;
-        // Case-insensitive check for @botname command
-        String pattern = "(?i)@" + Pattern.quote(getBotName()) + "\\s+" + Pattern.quote(command);
-        return Pattern.compile(pattern).matcher(text).find();
+    public String getHelpMessage() {
+        String n = getBotName();
+        return String.format("""
+            I don't know this command or the format is incorrect.
+            **Rule:** Commands must be on their own line. The message body starts on the next line.
+            
+            **Examples:**
+            
+            `@%s /reply keycloak-security`
+            `Your message body here...`
+            
+            `@%s /reply sender`
+            `Your message body here...`
+            
+            `@%s /new secalert "Subject"`
+            `Your message body here...`
+            """, n, n, n);
     }
-
-    private String extractContent(String text, String command) {
-        // Matches the same pattern to find where the content starts
-        String patternStr = "(?i)@" + Pattern.quote(getBotName()) + "\\s+" + Pattern.quote(command);
-        Pattern p = Pattern.compile(patternStr);
-        Matcher m = p.matcher(text);
-        if (m.find()) {
-            return text.substring(m.end()).trim();
-        }
-        return "";
-    }
-
-    public record EmailRequest(String subject, String body) {}
 }
