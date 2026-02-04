@@ -24,9 +24,7 @@ public class EmailSyncService {
     private static final Logger LOG = Logger.getLogger(EmailSyncService.class);
 
     private static final String VISIBLE_MARKER_PREFIX = "**Gmail-Thread-ID:** ";
-    // Matches "**Gmail-Thread-ID:** 12345"
     private static final Pattern VISIBLE_MARKER_PATTERN = Pattern.compile("\\*\\*Gmail-Thread-ID:\\*\\*\\s*([a-f0-9]+)");
-    // Matches raw "1234567890abcdef" anywhere (Fallback)
     private static final Pattern RAW_HEX_PATTERN = Pattern.compile("\\b([a-f0-9]{16})\\b");
     private static final Pattern SIGNATURE_PATTERN = Pattern.compile("(?m)^--\\s*$|^You received this message because you are subscribed.*");
 
@@ -101,7 +99,11 @@ public class EmailSyncService {
 
                     GHIssue newIssue = github.createIssue(subject, ISSUE_DESCRIPTION_TEMPLATE);
                     if (newIssue != null) {
-                        try { newIssue.addLabels(Labels.STATUS_TRIAGE); } catch (Exception e) {}
+                        try {
+                            newIssue.addLabels(Labels.STATUS_TRIAGE);
+                        } catch (Exception e) {
+                            LOG.errorf(e, "Failed to add label to issue #%d", newIssue.getNumber());
+                        }
 
                         String firstComment = VISIBLE_MARKER_PREFIX + threadId + "\n" +
                                 "**From:** " + from + "\n\n" +
@@ -125,27 +127,32 @@ public class EmailSyncService {
                 ReactionContent reaction = ReactionContent.EYES;
 
                 switch (cmd.type()) {
-                    case REPLY_GROUP:
+                    case REPLY_KEYCLOAK_SECURITY:
                         if (threadIdOpt.isPresent()) {
-                            success = sendReplyToGroupOnly(threadIdOpt.get(), issue.getTitle(), cmd.body());
-                        } else {
-                            replyWithError(issue, comment, "❌ Error: I cannot find the Gmail Thread ID in this issue's comments. I don't know which email thread to reply to.");
-                            success = true; // Mark handled (as error)
-                            reaction = ReactionContent.CONFUSED;
-                        }
-                        break;
-                    case REPLY_SENDER:
-                        if (threadIdOpt.isPresent()) {
+                            // Logic: Sender + Group
                             success = sendReplyToSenderAndGroup(threadIdOpt.get(), issue.getTitle(), cmd.body());
+                            if (!success) {
+                                replyWithError(issue, comment, "❌ Error: Failed to send email via Gmail API.");
+                                success = true;
+                                reaction = ReactionContent.CONFUSED;
+                            }
                         } else {
-                            replyWithError(issue, comment, "❌ Error: I cannot find the Gmail Thread ID in this issue's comments.");
+                            replyWithError(issue, comment, "❌ Error: I cannot find the Gmail Thread ID in comments.");
                             success = true;
                             reaction = ReactionContent.CONFUSED;
                         }
                         break;
+
                     case NEW_SECALERT:
-                        success = sendNewEmail(secAlertEmail, cmd.subject().orElse("No Subject"), cmd.body());
+                        // Logic: SecAlert + Group
+                        success = sendNewEmail(secAlertEmail, targetGroup, cmd.subject().orElse("No Subject"), cmd.body());
+                        if (!success) {
+                            replyWithError(issue, comment, "❌ Error: Failed to send email via Gmail API.");
+                            success = true;
+                            reaction = ReactionContent.CONFUSED;
+                        }
                         break;
+
                     case UNKNOWN:
                         sendHelpMessage(issue, comment);
                         success = true;
@@ -155,7 +162,11 @@ public class EmailSyncService {
 
                 if (success) {
                     processedComments.add(comment.getId());
-                    try { comment.createReaction(reaction); } catch (Exception e) { LOG.warn("Failed to react"); }
+                    try {
+                        comment.createReaction(reaction);
+                    } catch (Exception e) {
+                        LOG.errorf(e, "Failed to add reaction to comment %d", comment.getId());
+                    }
                     LOG.infof("✅ Command executed: %s", cmd.type());
                 }
             });
@@ -167,7 +178,7 @@ public class EmailSyncService {
             String userLogin = comment.getUser().getLogin();
             github.commentOnIssue(issue, "@" + userLogin + " " + message);
         } catch (IOException e) {
-            LOG.error("Failed to send error reply", e);
+            LOG.errorf(e, "Failed to send error reply to issue #%d", issue.getNumber());
         }
     }
 
@@ -177,7 +188,51 @@ public class EmailSyncService {
             String body = "@" + userLogin + " " + commandService.getHelpMessage();
             github.commentOnIssue(issue, body);
         } catch (IOException e) {
-            LOG.error("Failed to send help message", e);
+            LOG.errorf(e, "Failed to send help message to issue #%d", issue.getNumber());
+        }
+    }
+
+    private boolean sendReplyToSenderAndGroup(String threadId, String subject, String body) {
+        try {
+            com.google.api.services.gmail.model.Thread thread = gmail.getThread(threadId);
+            if (thread == null || thread.getMessages() == null) return false;
+            Message targetMsg = findLastHumanMessage(thread.getMessages());
+            if (targetMsg == null) return false;
+
+            MimeMessage email = new MimeMessage(Session.getDefaultInstance(new Properties(), null));
+            setupThreadingHeaders(email, targetMsg);
+
+            String sender = gmail.getHeader(targetMsg, "From");
+            if (sender != null) email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(sender));
+            email.addRecipient(jakarta.mail.Message.RecipientType.CC, new InternetAddress(targetGroup));
+
+            email.setFrom(new InternetAddress(botEmail));
+            email.setSubject(subject.startsWith("Re:") ? subject : "Re: " + subject);
+            email.setText(body);
+
+            gmail.sendMessage(threadId, email);
+            return true;
+        } catch (Exception e) {
+            LOG.error("Failed to send reply to sender+group", e);
+            return false;
+        }
+    }
+
+    private boolean sendNewEmail(String to, String cc, String subject, String body) {
+        try {
+            MimeMessage email = new MimeMessage(Session.getDefaultInstance(new Properties(), null));
+            email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(to));
+            if (cc != null && !cc.isBlank()) {
+                email.addRecipient(jakarta.mail.Message.RecipientType.CC, new InternetAddress(cc));
+            }
+            email.setFrom(new InternetAddress(botEmail));
+            email.setSubject(subject);
+            email.setText(body);
+            gmail.sendMessage(null, email);
+            return true;
+        } catch (Exception e) {
+            LOG.error("Failed to send new email", e);
+            return false;
         }
     }
 
@@ -189,18 +244,12 @@ public class EmailSyncService {
         return Optional.empty();
     }
 
-    // FIX: Fallback to raw hex if the pretty markdown pattern isn't found
     private Optional<String> extractThreadId(String text) {
         if (text == null) return Optional.empty();
-
-        // 1. Try Strict Markdown Pattern
         Matcher m = VISIBLE_MARKER_PATTERN.matcher(text);
         if (m.find()) return Optional.of(m.group(1).trim());
-
-        // 2. Try Raw Hex Pattern (Fallback)
         Matcher raw = RAW_HEX_PATTERN.matcher(text);
         if (raw.find()) return Optional.of(raw.group(1).trim());
-
         return Optional.empty();
     }
 
@@ -215,8 +264,6 @@ public class EmailSyncService {
         return trimmed.isEmpty() ? Optional.empty() : Optional.of(trimmed);
     }
 
-    // ... (Helpers: isValidGroupMessage, sendReplyToGroupOnly, sendReplyToSenderAndGroup, sendNewEmail, setupThreadingHeaders, findLastHumanMessage, hasAlreadyProcessed match previous implementation) ...
-
     private boolean isValidGroupMessage(Message msg) {
         String listId = gmail.getHeader(msg, "List-ID");
         String groupIdentifier = targetGroup.split("@")[0];
@@ -224,54 +271,6 @@ public class EmailSyncService {
         String to = gmail.getHeader(msg, "To");
         String cc = gmail.getHeader(msg, "Cc");
         return (to != null && to.contains(targetGroup)) || (cc != null && cc.contains(targetGroup));
-    }
-
-    private boolean sendReplyToGroupOnly(String threadId, String subject, String body) {
-        try {
-            com.google.api.services.gmail.model.Thread thread = gmail.getThread(threadId);
-            if (thread == null || thread.getMessages() == null) return false;
-            Message targetMsg = findLastHumanMessage(thread.getMessages());
-            if (targetMsg == null) return false;
-            MimeMessage email = new MimeMessage(Session.getDefaultInstance(new Properties(), null));
-            setupThreadingHeaders(email, targetMsg);
-            email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(targetGroup));
-            email.setFrom(new InternetAddress(botEmail));
-            email.setSubject(subject.startsWith("Re:") ? subject : "Re: " + subject);
-            email.setText(body);
-            gmail.sendMessage(threadId, email);
-            return true;
-        } catch (Exception e) { LOG.error("Failed to send reply to group", e); return false; }
-    }
-
-    private boolean sendReplyToSenderAndGroup(String threadId, String subject, String body) {
-        try {
-            com.google.api.services.gmail.model.Thread thread = gmail.getThread(threadId);
-            if (thread == null || thread.getMessages() == null) return false;
-            Message targetMsg = findLastHumanMessage(thread.getMessages());
-            if (targetMsg == null) return false;
-            MimeMessage email = new MimeMessage(Session.getDefaultInstance(new Properties(), null));
-            setupThreadingHeaders(email, targetMsg);
-            String sender = gmail.getHeader(targetMsg, "From");
-            if (sender != null) email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(sender));
-            email.addRecipient(jakarta.mail.Message.RecipientType.CC, new InternetAddress(targetGroup));
-            email.setFrom(new InternetAddress(botEmail));
-            email.setSubject(subject.startsWith("Re:") ? subject : "Re: " + subject);
-            email.setText(body);
-            gmail.sendMessage(threadId, email);
-            return true;
-        } catch (Exception e) { LOG.error("Failed to send reply to sender+group", e); return false; }
-    }
-
-    private boolean sendNewEmail(String to, String subject, String body) {
-        try {
-            MimeMessage email = new MimeMessage(Session.getDefaultInstance(new Properties(), null));
-            email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(to));
-            email.setFrom(new InternetAddress(botEmail));
-            email.setSubject(subject);
-            email.setText(body);
-            gmail.sendMessage(null, email);
-            return true;
-        } catch (Exception e) { LOG.error("Failed to send new email", e); return false; }
     }
 
     private void setupThreadingHeaders(MimeMessage email, Message targetMsg) throws Exception {
@@ -296,13 +295,16 @@ public class EmailSyncService {
         try {
             for (GHReaction reaction : comment.listReactions()) {
                 String reactionUser = reaction.getUser().getLogin();
+                // Check for EYES (Success) or CONFUSED (Error/Unknown)
                 if ((reaction.getContent() == ReactionContent.EYES || reaction.getContent() == ReactionContent.CONFUSED) &&
                         (reactionUser.equalsIgnoreCase(myLogin) || reactionUser.equalsIgnoreCase(myLogin + "[bot]"))) {
                     processedComments.add(comment.getId());
                     return true;
                 }
             }
-        } catch (Exception e) { }
+        } catch (Exception e) {
+            LOG.errorf(e, "Failed to check reactions for comment %d", comment.getId());
+        }
         return false;
     }
 }

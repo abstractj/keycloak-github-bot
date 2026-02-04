@@ -14,10 +14,9 @@ public class BotCommandService {
     GitHubInstallationProvider gitHubProvider;
 
     public enum CommandType {
-        REPLY_GROUP,    // /reply keycloak-security
-        REPLY_SENDER,   // /reply sender
-        NEW_SECALERT,   // /new secalert
-        UNKNOWN         // @bot anything-else
+        REPLY_KEYCLOAK_SECURITY, // @bot /reply keycloak-security
+        NEW_SECALERT,            // @bot /new secalert
+        UNKNOWN                  // @bot anything-else
     }
 
     public record Command(CommandType type, Optional<String> subject, String body) {
@@ -41,25 +40,16 @@ public class BotCommandService {
         }
 
         // 1. /reply keycloak-security
-        // STRICT: Enforces newline ([\r\n]+) before body capture
-        Pattern replyGroup = Pattern.compile("(?msi)^@" + botName + "\\s+/reply\\s+keycloak-security\\s*[\r\n]+(.*)");
-        Matcher mGroup = replyGroup.matcher(trimmedText);
-        if (mGroup.find()) {
-            String body = mGroup.group(1).trim();
-            return body.isEmpty() ? Optional.empty() : Optional.of(new Command(CommandType.REPLY_GROUP, Optional.empty(), body));
+        // Strict newline rule: Command on line 1, Body on line 2+
+        Pattern replySecurity = Pattern.compile("(?msi)^@" + botName + "\\s+/reply\\s+keycloak-security\\s*[\r\n]+(.*)");
+        Matcher mSecurity = replySecurity.matcher(trimmedText);
+        if (mSecurity.find()) {
+            String body = mSecurity.group(1).trim();
+            return body.isEmpty() ? Optional.empty() : Optional.of(new Command(CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), body));
         }
 
-        // 2. /reply sender
-        // STRICT: Enforces newline ([\r\n]+) before body capture
-        Pattern replySender = Pattern.compile("(?msi)^@" + botName + "\\s+/reply\\s+sender\\s*[\r\n]+(.*)");
-        Matcher mSender = replySender.matcher(trimmedText);
-        if (mSender.find()) {
-            String body = mSender.group(1).trim();
-            return body.isEmpty() ? Optional.empty() : Optional.of(new Command(CommandType.REPLY_SENDER, Optional.empty(), body));
-        }
-
-        // 3. /new secalert "Subject"
-        // STRICT: Enforces newline ([\r\n]+) before body capture
+        // 2. /new secalert "Subject"
+        // Strict newline rule: Command on line 1, Body on line 2+
         Pattern newSecAlert = Pattern.compile("(?msi)^@" + botName + "\\s+/new\\s+secalert\\s+\"([^\"]+)\"\\s*[\r\n]+(.*)");
         Matcher mSecAlert = newSecAlert.matcher(trimmedText);
         if (mSecAlert.find()) {
@@ -69,8 +59,7 @@ public class BotCommandService {
             return Optional.of(new Command(CommandType.NEW_SECALERT, Optional.of(subject), body));
         }
 
-        // 4. FALLBACK: UNKNOWN COMMAND
-        // Catches lines starting with @bot that didn't match the strict regexes above
+        // 3. FALLBACK: UNKNOWN COMMAND
         if (mentionStartOfLine.matcher(trimmedText).find()) {
             return Optional.of(new Command(CommandType.UNKNOWN, Optional.empty(), trimmedText));
         }
@@ -93,16 +82,13 @@ public class BotCommandService {
             I don't know this command or the format is incorrect.
             **Rule:** Commands must be on their own line. The message body starts on the next line.
             
-            **Examples:**
+            **Available Commands:**
             
             `@%s /reply keycloak-security`
-            `Your message body here...`
-            
-            `@%s /reply sender`
-            `Your message body here...`
+            `REPLY BODY (Sent to: Sender + Keycloak Security List)`
             
             `@%s /new secalert "Subject"`
-            `Your message body here...`
-            """, n, n, n);
+            `EMAIL BODY (Sent to: SecAlert + Keycloak Security List)`
+            """, n, n);
     }
 }
