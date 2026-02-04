@@ -1,18 +1,14 @@
 package org.keycloak.gh.bot.email;
 
 import com.google.api.services.gmail.Gmail;
-import com.google.api.services.gmail.model.ListMessagesResponse;
-import com.google.api.services.gmail.model.Message;
-import com.google.api.services.gmail.model.MessagePart;
-import com.google.api.services.gmail.model.MessagePartHeader;
-import com.google.api.services.gmail.model.ModifyMessageRequest;
+import com.google.api.services.gmail.model.*;
 import com.google.api.services.gmail.model.Thread;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.mail.internet.MimeMessage;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
-import jakarta.mail.internet.MimeMessage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Base64;
@@ -28,7 +24,6 @@ public class GmailAdapter {
     @Inject
     Gmail gmail;
 
-    // FIX: Limit the number of messages per run to prevent blocking the thread > 60s
     @ConfigProperty(name = "gmail.batch.size", defaultValue = "20")
     long batchSize;
 
@@ -36,7 +31,7 @@ public class GmailAdapter {
         try {
             ListMessagesResponse listResponse = gmail.users().messages().list("me")
                     .setQ(query)
-                    .setMaxResults(batchSize) // FIX: Enforce batch limit
+                    .setMaxResults(batchSize)
                     .execute();
             return listResponse.getMessages() != null ? listResponse.getMessages() : Collections.emptyList();
         } catch (IOException e) {
@@ -49,7 +44,16 @@ public class GmailAdapter {
         try {
             return gmail.users().messages().get("me", id).execute();
         } catch (IOException e) {
-            LOG.errorf("Failed to get message content for %s", id, e);
+            LOG.errorf("Failed to get message %s", id, e);
+            return null;
+        }
+    }
+
+    public Thread getThread(String threadId) {
+        try {
+            return gmail.users().threads().get("me", threadId).setFormat("METADATA").execute();
+        } catch (IOException e) {
+            LOG.errorf("Failed to get thread %s", threadId, e);
             return null;
         }
     }
@@ -63,29 +67,19 @@ public class GmailAdapter {
         }
     }
 
-    public Thread getThread(String threadId) {
-        try {
-            return gmail.users().threads().get("me", threadId).setFormat("METADATA").execute();
-        } catch (IOException e) {
-            LOG.errorf("Failed to get thread %s", threadId, e);
-            return null;
-        }
-    }
-
     public void sendMessage(String threadId, MimeMessage email) {
         try {
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             email.writeTo(buffer);
-            byte[] bytes = buffer.toByteArray();
-            String encodedEmail = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+            String encodedEmail = Base64.getUrlEncoder().withoutPadding().encodeToString(buffer.toByteArray());
 
             Message message = new Message();
             message.setRaw(encodedEmail);
-            message.setThreadId(threadId);
-
+            if (threadId != null) {
+                message.setThreadId(threadId);
+            }
             gmail.users().messages().send("me", message).execute();
         } catch (Exception e) {
-            LOG.error("Failed to send email", e);
             throw new RuntimeException("Failed to send email via Gmail API", e);
         }
     }
@@ -100,30 +94,21 @@ public class GmailAdapter {
 
     public String getBody(Message message) {
         if (message == null) return "";
-
-        // 1. Try direct body (if payload has data)
         if (message.getPayload().getBody().getData() != null) {
             return new String(Base64.getUrlDecoder().decode(message.getPayload().getBody().getData()));
         }
-
-        // 2. Recursive search using Optional
         return getPartsBody(message.getPayload().getParts()).orElse("");
     }
 
     private Optional<String> getPartsBody(List<MessagePart> parts) {
         if (parts == null) return Optional.empty();
-
         for (MessagePart part : parts) {
             if ("text/plain".equals(part.getMimeType()) && part.getBody().getData() != null) {
-                String decoded = new String(Base64.getUrlDecoder().decode(part.getBody().getData()));
-                return Optional.of(decoded);
+                return Optional.of(new String(Base64.getUrlDecoder().decode(part.getBody().getData())));
             }
-
             if (part.getParts() != null) {
                 Optional<String> result = getPartsBody(part.getParts());
-                if (result.isPresent()) {
-                    return result;
-                }
+                if (result.isPresent()) return result;
             }
         }
         return Optional.empty();

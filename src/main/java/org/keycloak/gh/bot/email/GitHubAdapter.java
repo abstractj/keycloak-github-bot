@@ -2,42 +2,38 @@ package org.keycloak.gh.bot.email;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import org.keycloak.gh.bot.GitHubInstallationProvider;
 import org.jboss.logging.Logger;
-import org.kohsuke.github.*;
+import org.keycloak.gh.bot.GitHubInstallationProvider;
+import org.kohsuke.github.GHIssue;
+import org.kohsuke.github.GHIssueState;
+import org.kohsuke.github.GHRepository;
+import org.kohsuke.github.PagedSearchIterable;
 
 import java.io.IOException;
-import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 
 @ApplicationScoped
-public class EmailGitHubAdapter {
+public class GitHubAdapter {
 
-    private static final Logger LOG = Logger.getLogger(EmailGitHubAdapter.class);
+    private static final Logger LOG = Logger.getLogger(GitHubAdapter.class);
 
     @Inject
     GitHubInstallationProvider gitHubProvider;
 
-    private GitHub getGitHub() {
-        return gitHubProvider.getGitHub();
-    }
-
     private GHRepository getRepository() throws IOException {
         String fullRepoName = gitHubProvider.getRepositoryFullName();
-        if (fullRepoName == null) {
-            throw new IllegalStateException("Repository name is null.");
-        }
-        return getGitHub().getRepository(fullRepoName);
+        if (fullRepoName == null) throw new IllegalStateException("Repository name is null.");
+        return gitHubProvider.getGitHub().getRepository(fullRepoName);
     }
 
     public GHIssue createIssue(String subject, String body) {
         try {
             GHIssue issue = getRepository().createIssue(subject).body(body).create();
-            LOG.infof("🆕 Created Issue #%d: %s", issue.getNumber(), subject);
+            LOG.infof("🆕 Created Issue #%d", issue.getNumber());
             return issue;
         } catch (Exception e) {
-            LOG.error("Failed to create issue", e);
             throw new RuntimeException("Failed to create GitHub issue", e);
         }
     }
@@ -45,26 +41,19 @@ public class EmailGitHubAdapter {
     public void commentOnIssue(GHIssue issue, String commentBody) {
         try {
             issue.comment(commentBody);
-            LOG.infof("💬 Added comment to Issue #%d", issue.getNumber());
+            LOG.debugf("💬 Commented on Issue #%d", issue.getNumber());
         } catch (Exception e) {
             LOG.error("Failed to comment on issue", e);
         }
     }
 
-    /**
-     * Searches for an issue containing the Gmail Thread ID.
-     * @return Optional containing the issue if found, empty otherwise.
-     */
     public Optional<GHIssue> findIssueByThreadId(String threadId) {
         try {
             String repoName = gitHubProvider.getRepositoryFullName();
-            if (repoName == null) return Optional.empty();
-
+            // Using search is expensive (rate limit ~30 req/min).
+            // Since we batch email processing to max 20 per 60s, this is safe.
             String query = String.format("repo:%s \"%s\" in:comments type:issue", repoName, threadId);
-            LOG.debugf("🔍 Searching for thread in comments: [%s]", query);
-
-            PagedSearchIterable<GHIssue> issues = getGitHub().searchIssues().q(query).list();
-
+            PagedSearchIterable<GHIssue> issues = gitHubProvider.getGitHub().searchIssues().q(query).list();
             if (issues.getTotalCount() > 0) {
                 return Optional.of(issues.iterator().next());
             }
@@ -74,12 +63,20 @@ public class EmailGitHubAdapter {
         return Optional.empty();
     }
 
-    public List<GHIssue> getOpenIssues() {
+    /**
+     * Efficiently fetches only issues that have changed since the provided date.
+     * This saves API quota compared to fetching all open issues.
+     */
+    public List<GHIssue> getIssuesUpdatedSince(Date since) {
         try {
-            return getRepository().getIssues(GHIssueState.OPEN);
+            return getRepository().queryIssues()
+                    .state(GHIssueState.OPEN)
+                    .since(since)
+                    .list()
+                    .toList();
         } catch (Exception e) {
-            LOG.error("Failed to fetch open issues", e);
-            return Collections.emptyList();
+            LOG.error("Failed to fetch updated issues", e);
+            return List.of();
         }
     }
 }

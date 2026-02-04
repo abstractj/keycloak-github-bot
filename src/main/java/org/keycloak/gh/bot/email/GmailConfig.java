@@ -31,7 +31,10 @@ public class GmailConfig {
                     .setRefreshToken(refreshToken)
                     .build();
 
-            return new Gmail.Builder(GoogleNetHttpTransport.newTrustedTransport(), GsonFactory.getDefaultInstance(), new HttpCredentialsAdapter(credentials))
+            return new Gmail.Builder(
+                    GoogleNetHttpTransport.newTrustedTransport(),
+                    GsonFactory.getDefaultInstance(),
+                    new HttpCredentialsAdapter(credentials))
                     .setApplicationName(appName)
                     .build();
         } catch (IOException | GeneralSecurityException e) {
