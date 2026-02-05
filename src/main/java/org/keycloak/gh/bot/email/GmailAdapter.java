@@ -1,6 +1,5 @@
 package org.keycloak.gh.bot.email;
 
-import com.google.api.client.googleapis.json.GoogleJsonResponseException;
 import com.google.api.services.gmail.Gmail;
 import com.google.api.services.gmail.model.ListMessagesResponse;
 import com.google.api.services.gmail.model.Message;
@@ -20,12 +19,11 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 /**
- * Adapts the Gmail API to provide domain-specific email operations.
+ * Provides domain-specific operations for the Gmail API.
  */
 @ApplicationScoped
 public class GmailAdapter {
@@ -66,9 +64,7 @@ public class GmailAdapter {
         }
 
         String encodedEmail = Base64.getUrlEncoder().withoutPadding().encodeToString(buffer.toByteArray());
-
-        Message message = new Message();
-        message.setRaw(encodedEmail);
+        Message message = new Message().setRaw(encodedEmail);
         if (threadId != null) {
             message.setThreadId(threadId);
         }
@@ -76,11 +72,7 @@ public class GmailAdapter {
     }
 
     public String getHeader(Message message, String name) {
-        if (message == null || message.getPayload() == null || message.getPayload().getHeaders() == null) return "";
-        return message.getPayload().getHeaders().stream()
-                .filter(h -> h.getName().equalsIgnoreCase(name))
-                .findFirst()
-                .map(MessagePartHeader::getValue).orElse("");
+        return getHeadersMap(message).getOrDefault(name, "");
     }
 
     public Map<String, String> getHeadersMap(Message message) {
@@ -98,26 +90,34 @@ public class GmailAdapter {
 
     public String getBody(Message message) {
         if (message == null || message.getPayload() == null) return "";
-
         MessagePartBody body = message.getPayload().getBody();
         if (body != null && body.getData() != null) {
-            return new String(Base64.getUrlDecoder().decode(body.getData()));
+            return decode(body.getData());
         }
-
-        return getPartsBody(message.getPayload().getParts()).orElse("");
+        return getBestContent(message.getPayload().getParts());
     }
 
-    private Optional<String> getPartsBody(List<MessagePart> parts) {
-        if (parts == null) return Optional.empty();
+    private String getBestContent(List<MessagePart> parts) {
+        if (parts == null) return "";
+        String htmlContent = null;
         for (MessagePart part : parts) {
-            if ("text/plain".equals(part.getMimeType()) && part.getBody() != null && part.getBody().getData() != null) {
-                return Optional.of(new String(Base64.getUrlDecoder().decode(part.getBody().getData())));
+            if (part.getBody() != null && part.getBody().getData() != null) {
+                if ("text/plain".equalsIgnoreCase(part.getMimeType())) {
+                    return decode(part.getBody().getData());
+                }
+                if ("text/html".equalsIgnoreCase(part.getMimeType())) {
+                    htmlContent = decode(part.getBody().getData());
+                }
             }
             if (part.getParts() != null) {
-                Optional<String> result = getPartsBody(part.getParts());
-                if (result.isPresent()) return result;
+                String nested = getBestContent(part.getParts());
+                if (!nested.isEmpty()) return nested;
             }
         }
-        return Optional.empty();
+        return htmlContent != null ? htmlContent : "";
+    }
+
+    private String decode(String data) {
+        return new String(Base64.getUrlDecoder().decode(data));
     }
 }

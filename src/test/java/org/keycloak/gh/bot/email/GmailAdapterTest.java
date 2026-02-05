@@ -13,6 +13,9 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+/**
+ * Verification for Gmail data extraction and header handling.
+ */
 @QuarkusTest
 public class GmailAdapterTest {
 
@@ -46,25 +49,17 @@ public class GmailAdapterTest {
     }
 
     @Test
-    public void testGetBodyMultipartNested() {
-        String expectedText = "Clean Text";
-        String encodedText = Base64.getUrlEncoder().encodeToString(expectedText.getBytes());
-        String encodedHtml = Base64.getUrlEncoder().encodeToString("<html>Bad</html>".getBytes());
-
-        MessagePart textPart = new MessagePart()
-                .setMimeType("text/plain")
-                .setBody(new MessagePartBody().setData(encodedText));
+    public void testGetBodyHtmlFallback() {
+        String html = "<html><body>Clean Content</body></html>";
+        String encodedHtml = Base64.getUrlEncoder().encodeToString(html.getBytes());
 
         MessagePart htmlPart = new MessagePart()
                 .setMimeType("text/html")
                 .setBody(new MessagePartBody().setData(encodedHtml));
 
         Message msg = new Message();
-        MessagePart root = new MessagePart();
-        root.setParts(List.of(textPart, htmlPart));
-        root.setBody(new MessagePartBody());
-        msg.setPayload(root);
+        msg.setPayload(new MessagePart().setParts(List.of(htmlPart)));
 
-        assertEquals(expectedText, gmailAdapter.getBody(msg));
+        assertEquals(html, gmailAdapter.getBody(msg));
     }
 }

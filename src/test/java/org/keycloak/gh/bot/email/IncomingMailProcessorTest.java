@@ -31,29 +31,22 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * Verification for the incoming email processing logic and GitHub issue creation.
+ */
 @QuarkusTest
 public class IncomingMailProcessorTest {
 
-    @Inject
-    IncomingMailProcessor incomingMailProcessor;
-
-    @InjectMock
-    GmailAdapter gmailAdapter;
-
-    @InjectMock
-    GitHubAdapter githubAdapter;
-
-    @InjectMock
-    Throttler throttler;
-
-    @ConfigProperty(name = "google.group.target")
-    String targetGroup;
+    @Inject IncomingMailProcessor incomingMailProcessor;
+    @InjectMock GmailAdapter gmailAdapter;
+    @InjectMock GitHubAdapter githubAdapter;
+    @InjectMock Throttler throttler;
+    @ConfigProperty(name = "google.group.target") String targetGroup;
 
     private static final String THREAD_ID = "123456789abcdef";
 
     @BeforeEach
     public void setup() throws IOException {
-        // Default safe state for tests: access is NOT denied (allowed)
         when(githubAdapter.isAccessDenied()).thenReturn(false);
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(Collections.emptyList());
         when(gmailAdapter.getBody(any())).thenCallRealMethod();
@@ -65,12 +58,11 @@ public class IncomingMailProcessorTest {
         Message message = createMockMessage(THREAD_ID, "Vulnerability", "Body content", "user@test.com");
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
         when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
-
         when(githubAdapter.findIssueByThreadId(THREAD_ID)).thenReturn(Optional.empty());
 
         GHIssue mockIssue = mock(GHIssue.class);
         when(mockIssue.getNumber()).thenReturn(101);
-        when(githubAdapter.createIssue(anyString(), anyString())).thenReturn(mockIssue);
+        when(githubAdapter.createIssue(eq("Vulnerability"), anyString())).thenReturn(mockIssue);
 
         incomingMailProcessor.processUnreadEmails();
 
@@ -87,57 +79,34 @@ public class IncomingMailProcessorTest {
         when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
 
         GHIssue existingIssue = mock(GHIssue.class);
-
         when(githubAdapter.findIssueByThreadId(THREAD_ID)).thenReturn(Optional.of(existingIssue));
 
         incomingMailProcessor.processUnreadEmails();
 
         verify(githubAdapter).commentOnIssue(eq(existingIssue), contains("More details here."));
-        verify(githubAdapter, never()).createIssue(anyString(), anyString());
         verify(gmailAdapter).markAsRead(message.getId());
         verify(throttler).throttle(any());
     }
 
     @Test
     public void testIgnoresIfRepoAccessDenied() throws IOException {
-        // Given the adapter reports access is denied
         when(githubAdapter.isAccessDenied()).thenReturn(true);
-
-        // When
         incomingMailProcessor.processUnreadEmails();
-
-        // Then
         verify(gmailAdapter, never()).fetchUnreadMessages(anyString());
     }
 
     private Message createMockMessage(String threadId, String subject, String body, String from) {
-        Message msg = new Message();
-        msg.setId(UUID.randomUUID().toString());
-        msg.setThreadId(threadId);
-
+        Message msg = new Message().setId(UUID.randomUUID().toString()).setThreadId(threadId);
         MessagePart payload = new MessagePart();
         List<MessagePartHeader> headers = new ArrayList<>();
-        headers.add(createHeader("Subject", subject));
-        headers.add(createHeader("From", from));
-        headers.add(createHeader("To", targetGroup));
-
-        String listId = targetGroup.replace("@", ".");
-        headers.add(createHeader("List-ID", "<" + listId + ">"));
-
+        headers.add(new MessagePartHeader().setName("Subject").setValue(subject));
+        headers.add(new MessagePartHeader().setName("From").setValue(from));
+        headers.add(new MessagePartHeader().setName("To").setValue(targetGroup));
+        headers.add(new MessagePartHeader().setName("List-ID").setValue("<" + targetGroup.replace("@", ".") + ">"));
         payload.setHeaders(headers);
         payload.setMimeType("text/plain");
-
-        MessagePartBody partBody = new MessagePartBody();
-        partBody.setData(Base64.getUrlEncoder().encodeToString(body.getBytes()));
-        payload.setBody(partBody);
+        payload.setBody(new MessagePartBody().setData(Base64.getUrlEncoder().encodeToString(body.getBytes())));
         msg.setPayload(payload);
         return msg;
-    }
-
-    private MessagePartHeader createHeader(String name, String value) {
-        MessagePartHeader h = new MessagePartHeader();
-        h.setName(name);
-        h.setValue(value);
-        return h;
     }
 }

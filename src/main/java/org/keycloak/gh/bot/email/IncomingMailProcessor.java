@@ -18,9 +18,6 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Orchestrates the fetching of emails and creation of GitHub issues.
- */
 @ApplicationScoped
 public class IncomingMailProcessor {
 
@@ -62,6 +59,7 @@ public class IncomingMailProcessor {
         try {
             msg = gmail.getMessage(msgSummary.getId());
 
+            // GmailAdapter now guarantees efficient Map return
             Map<String, String> headers = gmail.getHeadersMap(msg);
             String from = headers.getOrDefault("From", "");
 
@@ -72,6 +70,7 @@ public class IncomingMailProcessor {
 
             String threadId = msg.getThreadId();
             String subject = headers.getOrDefault("Subject", "");
+            // GmailAdapter now handles HTML fallback
             String cleanBody = sanitizeBody(gmail.getBody(msg)).orElse("(No content)");
 
             Optional<GHIssue> existingIssue = github.findIssueByThreadId(threadId);
@@ -118,7 +117,11 @@ public class IncomingMailProcessor {
 
     private void createNewIssue(String threadId, String subject, String from, String body) throws IOException {
         LOG.debugf("🤖 Creating Issue for Thread %s", threadId);
+
+        // Note: We intentionally use a template for the Issue Description to allow
+        // the maintainer to edit it later, while preserving the original email as the first comment.
         GHIssue newIssue = github.createIssue(subject, EmailConstants.ISSUE_DESCRIPTION_TEMPLATE);
+
         if (newIssue != null) {
             try {
                 newIssue.addLabels(Labels.STATUS_TRIAGE);

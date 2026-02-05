@@ -11,11 +11,9 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
-/**
- * Handles the construction and sending of MIME emails via the Gmail API.
- */
 @ApplicationScoped
 public class MailSender {
 
@@ -35,13 +33,10 @@ public class MailSender {
     public boolean sendNewEmail(String to, String cc, String subject, String body) {
         try {
             MimeMessage email = createBaseMessage();
-
             email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(to));
-
             if (cc != null && !cc.isBlank()) {
                 email.addRecipient(jakarta.mail.Message.RecipientType.CC, new InternetAddress(cc));
             }
-
             email.setSubject(subject);
             email.setText(body);
 
@@ -61,10 +56,12 @@ public class MailSender {
             Message targetMsg = findLastHumanMessage(thread.getMessages());
             if (targetMsg == null) return false;
 
-            MimeMessage email = createBaseMessage();
-            setupThreadingHeaders(email, targetMsg);
+            Map<String, String> headers = gmail.getHeadersMap(targetMsg);
 
-            String sender = gmail.getHeader(targetMsg, "From");
+            MimeMessage email = createBaseMessage();
+            setupThreadingHeaders(email, headers);
+
+            String sender = headers.get("From");
             if (sender != null) email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(sender));
             if (ccTarget != null) email.addRecipient(jakarta.mail.Message.RecipientType.CC, new InternetAddress(ccTarget));
 
@@ -85,9 +82,9 @@ public class MailSender {
         return email;
     }
 
-    private void setupThreadingHeaders(MimeMessage email, Message targetMsg) throws Exception {
-        String parentId = gmail.getHeader(targetMsg, "Message-ID");
-        String refs = gmail.getHeader(targetMsg, "References");
+    private void setupThreadingHeaders(MimeMessage email, Map<String, String> headers) throws Exception {
+        String parentId = headers.get("Message-ID");
+        String refs = headers.get("References");
         if (parentId != null && !parentId.isEmpty()) {
             email.setHeader("In-Reply-To", parentId);
             email.setHeader("References", (refs == null || refs.isEmpty() ? "" : refs + " ") + parentId);
@@ -95,10 +92,18 @@ public class MailSender {
     }
 
     private Message findLastHumanMessage(List<Message> history) {
+        // Iterate backwards to find the most recent message NOT from the bot
         for (int i = history.size() - 1; i >= 0; i--) {
-            String from = gmail.getHeader(history.get(i), "From");
-            if (from != null && !from.toLowerCase().contains(botEmail.toLowerCase())) return history.get(i);
+            Message msg = history.get(i);
+            // Optimization: Get map once per message instead of repeatedly iterating parts
+            Map<String, String> headers = gmail.getHeadersMap(msg);
+            String from = headers.get("From");
+
+            if (from != null && !from.toLowerCase().contains(botEmail.toLowerCase())) {
+                return msg;
+            }
         }
+        // Fallback: return the last message if everything seems to be from the bot (edge case)
         return history.get(history.size() - 1);
     }
 }
