@@ -10,8 +10,6 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.keycloak.gh.bot.security.common.GitHubSecurityAdapter;
-import org.keycloak.gh.bot.security.common.SecurityConstants;
 import org.keycloak.gh.bot.utils.Labels;
 import org.keycloak.gh.bot.utils.Throttler;
 import org.kohsuke.github.GHIssue;
@@ -21,25 +19,24 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @QuarkusTest
-public class SecurityMailProcessorTest {
+public class MailProcessorTest {
 
-    @Inject SecurityMailProcessor processor;
+    @Inject
+    MailProcessor processor;
     @InjectMock GmailAdapter gmailAdapter;
-    @InjectMock GitHubSecurityAdapter githubAdapter;
+    @InjectMock
+    org.keycloak.gh.bot.security.common.GitHubAdapter githubAdapter;
     @InjectMock Throttler throttler;
     @ConfigProperty(name = "google.group.target") String targetGroup;
 
@@ -62,18 +59,18 @@ public class SecurityMailProcessorTest {
 
         GHIssue mockIssue = mock(GHIssue.class);
         when(mockIssue.getNumber()).thenReturn(101);
-        when(githubAdapter.createSecurityIssue(eq("Vulnerability"), anyString(), eq(SecurityConstants.SOURCE_EMAIL))).thenReturn(mockIssue);
+        when(githubAdapter.createSecurityIssue(eq("Vulnerability"), anyString(), eq(org.keycloak.gh.bot.security.common.Constants.SOURCE_EMAIL))).thenReturn(mockIssue);
 
         processor.processUnreadEmails();
 
-        verify(githubAdapter).createSecurityIssue(eq("Vulnerability"), anyString(), eq(SecurityConstants.SOURCE_EMAIL));
+        verify(githubAdapter).createSecurityIssue(eq("Vulnerability"), anyString(), eq(org.keycloak.gh.bot.security.common.Constants.SOURCE_EMAIL));
         verify(mockIssue).addLabels(Labels.STATUS_TRIAGE);
         verify(gmailAdapter).markAsRead(message.getId());
     }
 
     @Test
     public void testRedHatCveUpdate() throws IOException {
-        Message message = createMockMessage(THREAD_ID, "Re: Vuln", "Fixed in CVE-2026-1518", SecurityConstants.REDHAT_SECALERT_SENDER);
+        Message message = createMockMessage(THREAD_ID, "Re: Vuln", "Fixed in CVE-2026-1518", org.keycloak.gh.bot.security.common.Constants.REDHAT_SECALERT_SENDER);
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
         when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
 
@@ -83,7 +80,7 @@ public class SecurityMailProcessorTest {
 
         processor.processUnreadEmails();
 
-        verify(githubAdapter).updateTitleAndLabels(existingIssue, "CVE-2026-1518 Vulnerability", SecurityConstants.KIND_CVE);
+        verify(githubAdapter).updateTitleAndLabels(existingIssue, "CVE-2026-1518 Vulnerability", org.keycloak.gh.bot.security.common.Constants.KIND_CVE);
     }
 
     private Message createMockMessage(String threadId, String subject, String body, String from) {

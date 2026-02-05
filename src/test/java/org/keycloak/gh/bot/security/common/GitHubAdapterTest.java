@@ -18,14 +18,17 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-public class GitHubSecurityAdapterTest {
+/**
+ * Unit tests for GitHubAdapter ensuring correct query structure for security reports.
+ */
+public class GitHubAdapterTest {
 
-    GitHubSecurityAdapter adapter;
-    GitHubInstallationProvider mockInstallationProvider;
+    private GitHubAdapter adapter;
+    private GitHubInstallationProvider mockInstallationProvider;
 
     @BeforeEach
     public void setup() {
-        adapter = new GitHubSecurityAdapter();
+        adapter = new GitHubAdapter();
         mockInstallationProvider = mock(GitHubInstallationProvider.class);
         adapter.gitHubProvider = mockInstallationProvider;
     }
@@ -54,7 +57,7 @@ public class GitHubSecurityAdapterTest {
 
         String query = queryCaptor.getValue();
         assertTrue(query.contains("repo:" + repoName));
-        assertTrue(query.contains("label:" + SecurityConstants.SOURCE_EMAIL));
+        assertTrue(query.contains("label:" + Constants.SOURCE_EMAIL));
         assertTrue(query.contains("is:open"));
         assertTrue(query.contains("\"thread-123\""));
     }

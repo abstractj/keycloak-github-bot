@@ -6,8 +6,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
-import org.keycloak.gh.bot.security.common.GitHubSecurityAdapter;
-import org.keycloak.gh.bot.security.common.SecurityConstants;
+import org.keycloak.gh.bot.security.common.Constants;
+import org.keycloak.gh.bot.security.common.GitHubAdapter;
 import org.keycloak.gh.bot.utils.Labels;
 import org.keycloak.gh.bot.utils.Throttler;
 import org.kohsuke.github.GHIssue;
@@ -20,10 +20,13 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Manages the ingestion of Gmail messages and their mapping to GitHub security issues.
+ */
 @ApplicationScoped
-public class SecurityMailProcessor {
+public class MailProcessor {
 
-    private static final Logger LOG = Logger.getLogger(SecurityMailProcessor.class);
+    private static final Logger LOG = Logger.getLogger(MailProcessor.class);
     private static final Pattern SIGNATURE_PATTERN = Pattern.compile("(?m)^--\\s*$|^You received this message because you are subscribed.*");
     private static final Pattern CVE_PATTERN = Pattern.compile("CVE-\\d{4}-\\d+");
 
@@ -31,13 +34,11 @@ public class SecurityMailProcessor {
     @ConfigProperty(name = "gmail.user.email") String botEmail;
 
     @Inject GmailAdapter gmail;
-    @Inject GitHubSecurityAdapter github;
+    @Inject GitHubAdapter github;
     @Inject Throttler throttler;
 
     public void processUnreadEmails() {
-        if (github.isAccessDenied()) {
-            return;
-        }
+        if (github.isAccessDenied()) return;
 
         String query = "is:unread -from:" + botEmail;
         List<Message> messages;
@@ -50,8 +51,7 @@ public class SecurityMailProcessor {
         }
 
         for (Message msgSummary : messages) {
-            boolean processed = processMessage(msgSummary);
-            if (processed) {
+            if (processMessage(msgSummary)) {
                 throttler.throttle(Duration.ofSeconds(1));
             }
         }
@@ -60,7 +60,6 @@ public class SecurityMailProcessor {
     private boolean processMessage(Message msgSummary) {
         try {
             Message msg = gmail.getMessage(msgSummary.getId());
-
             Map<String, String> headers = gmail.getHeadersMap(msg);
             String from = headers.getOrDefault("From", "");
 
@@ -73,7 +72,6 @@ public class SecurityMailProcessor {
             String subject = headers.getOrDefault("Subject", "");
             String cleanBody = sanitizeBody(gmail.getBody(msg)).orElse("(No content)");
 
-            // New logic: find by label:source/email + is:open
             Optional<GHIssue> existingIssue = github.findOpenEmailIssueByThreadId(threadId);
 
             if (existingIssue.isPresent()) {
@@ -86,37 +84,32 @@ public class SecurityMailProcessor {
 
             gmail.markAsRead(msgSummary.getId());
             return true;
-
-        } catch (GoogleJsonResponseException e) {
-            if (e.getStatusCode() >= 400 && e.getStatusCode() < 500) {
-                LOG.errorf(e, "Unrecoverable error processing message %s. Marking as read.", msgSummary.getId());
-                silentlyMarkAsRead(msgSummary.getId());
-                return true;
-            }
-            LOG.warnf("Transient Gmail API error for message %s: %s", msgSummary.getId(), e.getMessage());
-            return false;
-        } catch (IOException e) {
-            LOG.warnf("Network/IO error processing message %s: %s", msgSummary.getId(), e.getMessage());
-            return false;
         } catch (Exception e) {
-            LOG.errorf(e, "Unexpected error processing message %s. Marking as read to prevent poison loop.", msgSummary.getId());
-            silentlyMarkAsRead(msgSummary.getId());
+            handleProcessingError(msgSummary.getId(), e);
             return true;
         }
     }
 
     private void handleRedHatUpdates(GHIssue issue, String from, String body) throws IOException {
-        if (from.contains(SecurityConstants.REDHAT_JIRA_SENDER) || from.contains(SecurityConstants.REDHAT_SECALERT_SENDER)) {
+        if (from.contains(Constants.REDHAT_JIRA_SENDER) || from.contains(Constants.REDHAT_SECALERT_SENDER)) {
             Matcher matcher = CVE_PATTERN.matcher(body);
             if (matcher.find()) {
                 String cveId = matcher.group();
                 String currentTitle = issue.getTitle();
-                if (currentTitle.contains(SecurityConstants.CVE_TBD_PREFIX)) {
-                    String newTitle = currentTitle.replace(SecurityConstants.CVE_TBD_PREFIX, cveId);
-                    github.updateTitleAndLabels(issue, newTitle, SecurityConstants.KIND_CVE);
+                if (currentTitle.contains(Constants.CVE_TBD_PREFIX)) {
+                    github.updateTitleAndLabels(issue, currentTitle.replace(Constants.CVE_TBD_PREFIX, cveId), Constants.KIND_CVE);
                 }
             }
         }
+    }
+
+    private void handleProcessingError(String id, Exception e) {
+        if (e instanceof GoogleJsonResponseException ge && ge.getStatusCode() >= 400 && ge.getStatusCode() < 500) {
+            LOG.errorf(e, "Unrecoverable error on message %s.", id);
+        } else {
+            LOG.errorf(e, "Unexpected error on message %s. Marking read to prevent poison loop.", id);
+        }
+        silentlyMarkAsRead(id);
     }
 
     private void silentlyMarkAsRead(String id) {
@@ -128,25 +121,19 @@ public class SecurityMailProcessor {
     }
 
     private void appendComment(GHIssue issue, String from, String body, String threadId) throws IOException {
-        String comment = "**Reply from " + from + ":**\n\n" + body;
-        github.commentOnIssue(issue, comment);
+        github.commentOnIssue(issue, "**Reply from " + from + ":**\n\n" + body);
         LOG.debugf("✅ Commented on #%d (Thread %s)", issue.getNumber(), threadId);
     }
 
     private void createNewIssue(String threadId, String subject, String from, String body) throws IOException {
-        LOG.debugf("🤖 Creating Issue for Thread %s", threadId);
-
-        // New logic: Pass SOURCE_EMAIL label
-        GHIssue newIssue = github.createSecurityIssue(subject, SecurityConstants.ISSUE_DESCRIPTION_TEMPLATE, SecurityConstants.SOURCE_EMAIL);
-
+        GHIssue newIssue = github.createSecurityIssue(subject, Constants.ISSUE_DESCRIPTION_TEMPLATE, Constants.SOURCE_EMAIL);
         if (newIssue != null) {
             try {
                 newIssue.addLabels(Labels.STATUS_TRIAGE);
             } catch (IOException e) {
                 LOG.errorf(e, "Failed to label issue #%d", newIssue.getNumber());
             }
-            String firstComment = SecurityConstants.GMAIL_THREAD_ID_PREFIX + " " + threadId + "\n**From:** " + from + "\n\n" + body;
-            github.commentOnIssue(newIssue, firstComment);
+            github.commentOnIssue(newIssue, Constants.GMAIL_THREAD_ID_PREFIX + " " + threadId + "\n**From:** " + from + "\n\n" + body);
         }
     }
 
@@ -158,7 +145,6 @@ public class SecurityMailProcessor {
         String listId = headers.get("List-ID");
         String groupIdentifier = targetGroup.split("@")[0];
         if (listId != null && listId.contains(groupIdentifier)) return true;
-
         String to = headers.get("To");
         String cc = headers.get("Cc");
         return (to != null && to.contains(targetGroup)) || (cc != null && cc.contains(targetGroup));

@@ -6,8 +6,8 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.keycloak.gh.bot.security.common.SecurityCommandParser.Command;
-import org.keycloak.gh.bot.security.common.SecurityCommandParser.CommandType;
+import org.keycloak.gh.bot.security.common.CommandParser.Command;
+import org.keycloak.gh.bot.security.common.CommandParser.CommandType;
 import org.kohsuke.github.GHIssue;
 import org.kohsuke.github.GHIssueComment;
 import org.kohsuke.github.GHIssueCommentQueryBuilder;
@@ -35,13 +35,13 @@ import static org.mockito.Mockito.when;
 public class CommandProcessorTest {
 
     @Inject
-    org.keycloak.gh.bot.security.email.SecurityCommandProcessor securityCommandProcessor;
+    org.keycloak.gh.bot.security.email.CommandProcessor commandProcessor;
     @InjectMock
     org.keycloak.gh.bot.security.email.MailSender mailSender;
     @InjectMock
     org.keycloak.gh.bot.security.common.GitHubAdapter githubAdapter;
     @InjectMock
-    org.keycloak.gh.bot.security.common.SecurityCommandParser securityCommandParser;
+    org.keycloak.gh.bot.security.common.CommandParser commandParser;
 
     @ConfigProperty(name = "google.group.target") String targetGroup;
     @ConfigProperty(name = "email.target.secalert") String secAlertEmail;
@@ -49,7 +49,7 @@ public class CommandProcessorTest {
 
     @BeforeEach
     public void setup() throws IOException {
-        when(securityCommandParser.getBotName()).thenReturn(botName);
+        when(commandParser.getBotName()).thenReturn(botName);
         when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(Collections.emptyList());
     }
 
@@ -57,12 +57,12 @@ public class CommandProcessorTest {
     public void testNewSecAlertSuccess() throws IOException {
         GHIssue issue = mock(GHIssue.class);
         GHIssueComment comment = mockComment();
-        when(securityCommandParser.parse(anyString())).thenReturn(Optional.of(new Command(CommandType.NEW_SECALERT, Optional.of("CVE-123"), "Alert body.")));
+        when(commandParser.parse(anyString())).thenReturn(Optional.of(new Command(CommandType.NEW_SECALERT, Optional.of("CVE-123"), "Alert body.")));
         mockQueryComments(issue, List.of(comment));
         when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(List.of(issue));
         when(mailSender.sendNewEmail(eq(secAlertEmail), eq(targetGroup), anyString(), anyString())).thenReturn(true);
 
-        securityCommandProcessor.processCommands();
+        commandProcessor.processCommands();
 
         verify(mailSender).sendNewEmail(eq(secAlertEmail), eq(targetGroup), eq("CVE-123"), eq("Alert body."));
         verify(comment).createReaction(ReactionContent.EYES);
@@ -73,13 +73,13 @@ public class CommandProcessorTest {
         GHIssue issue = mock(GHIssue.class);
         when(issue.getTitle()).thenReturn("Security Thread");
         GHIssueComment comment = mockComment();
-        when(securityCommandParser.parse(anyString())).thenReturn(Optional.of(new Command(CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), "Fixed.")));
+        when(commandParser.parse(anyString())).thenReturn(Optional.of(new Command(CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), "Fixed.")));
         when(comment.getBody()).thenReturn("**Gmail-Thread-ID:** abc123def");
         mockQueryComments(issue, List.of(comment));
         when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(List.of(issue));
         when(mailSender.sendReply(anyString(), anyString(), anyString(), anyString())).thenReturn(true);
 
-        securityCommandProcessor.processCommands();
+        commandProcessor.processCommands();
 
         verify(mailSender).sendReply(eq("abc123def"), eq("Security Thread"), eq("Fixed."), eq(targetGroup));
     }

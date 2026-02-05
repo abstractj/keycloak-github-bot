@@ -4,6 +4,9 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
+import org.keycloak.gh.bot.security.common.CommandParser;
+import org.keycloak.gh.bot.security.common.Constants;
+import org.keycloak.gh.bot.security.common.GitHubAdapter;
 import org.kohsuke.github.GHIssue;
 import org.kohsuke.github.GHIssueComment;
 import org.kohsuke.github.GHReaction;
@@ -23,23 +26,21 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Identifies and executes bot commands from GitHub comments.
+ * Scans GitHub security issues for bot commands and handles their execution.
  */
 @ApplicationScoped
-public class SecurityCommandProcessor {
+public class CommandProcessor {
 
-    private static final Logger LOG = Logger.getLogger(SecurityCommandProcessor.class);
-    private static final Pattern VISIBLE_MARKER_PATTERN = Pattern.compile(Pattern.quote(org.keycloak.gh.bot.security.common.EmailConstants.GMAIL_THREAD_ID_PREFIX) + "\\s*([a-f0-9]+)");
+    private static final Logger LOG = Logger.getLogger(CommandProcessor.class);
+    private static final Pattern VISIBLE_MARKER_PATTERN = Pattern.compile(Pattern.quote(Constants.GMAIL_THREAD_ID_PREFIX) + "\\s*([a-f0-9]+)");
     private static final Pattern RAW_HEX_PATTERN = Pattern.compile("\\b([a-f0-9]{16})\\b");
     private static final int MAX_PROCESSED_HISTORY = 10000;
 
     @ConfigProperty(name = "google.group.target") String targetGroup;
     @ConfigProperty(name = "email.target.secalert") String secAlertEmail;
 
-    @Inject
-    org.keycloak.gh.bot.security.common.GitHubAdapter github;
-    @Inject
-    org.keycloak.gh.bot.security.common.SecurityCommandParser parser;
+    @Inject GitHubAdapter github;
+    @Inject CommandParser parser;
     @Inject MailSender mailSender;
 
     private final Set<Long> processedComments = Collections.synchronizedSet(Collections.newSetFromMap(
@@ -52,15 +53,11 @@ public class SecurityCommandProcessor {
     public void processCommands() {
         if (github.isAccessDenied()) return;
         try {
-            String myLogin = parser.getBotName();
-            if (myLogin == null || myLogin.isEmpty()) return;
-
             Instant executionStart = Instant.now();
-            Date querySince = Date.from(lastPollTime.minus(1, ChronoUnit.MINUTES));
-            List<GHIssue> updatedIssues = github.getIssuesUpdatedSince(querySince);
+            List<GHIssue> updatedIssues = github.getIssuesUpdatedSince(Date.from(lastPollTime.minus(1, ChronoUnit.MINUTES)));
 
             for (GHIssue issue : updatedIssues) {
-                scanIssue(issue, myLogin);
+                scanIssue(issue);
             }
             lastPollTime = executionStart;
         } catch (Exception e) {
@@ -68,7 +65,7 @@ public class SecurityCommandProcessor {
         }
     }
 
-    private void scanIssue(GHIssue issue, String myLogin) {
+    private void scanIssue(GHIssue issue) {
         try {
             List<GHIssueComment> allComments = issue.queryComments().list().toList();
             Optional<String> threadIdOpt = findThreadId(allComments);
@@ -80,10 +77,10 @@ public class SecurityCommandProcessor {
 
                 parser.parse(comment.getBody()).ifPresent(cmd -> {
                     try {
-                        if (hasAlreadyProcessed(comment, myLogin)) return;
+                        if (hasAlreadyProcessed(comment)) return;
                         executeCommand(issue, comment, cmd, threadIdOpt);
                     } catch (IOException e) {
-                        LOG.errorf(e, "Error checking reactions for comment %d", comment.getId());
+                        LOG.errorf(e, "Error on comment %d", comment.getId());
                     }
                 });
             }
@@ -104,7 +101,7 @@ public class SecurityCommandProcessor {
         return Optional.empty();
     }
 
-    private void executeCommand(GHIssue issue, GHIssueComment comment, org.keycloak.gh.bot.security.common.SecurityCommandParser.Command cmd, Optional<String> threadId) {
+    private void executeCommand(GHIssue issue, GHIssueComment comment, CommandParser.Command cmd, Optional<String> threadId) {
         boolean success = false;
         ReactionContent reaction = ReactionContent.EYES;
 
@@ -116,15 +113,10 @@ public class SecurityCommandProcessor {
                 if (threadId.isPresent()) {
                     success = mailSender.sendReply(threadId.get(), issue.getTitle(), cmd.body(), targetGroup);
                 } else {
-                    replyWithError(issue, comment, "❌ Error: Gmail Thread ID not found.");
+                    replyWithError(issue, comment, "❌ Error: Thread ID not found.");
                     success = true;
                     reaction = ReactionContent.CONFUSED;
                 }
-            }
-            case UNKNOWN -> {
-                sendHelpMessage(issue, comment);
-                success = true;
-                reaction = ReactionContent.CONFUSED;
             }
         }
 
@@ -132,7 +124,7 @@ public class SecurityCommandProcessor {
             processedComments.add(comment.getId());
             addReaction(comment, reaction);
         } else {
-            replyWithError(issue, comment, "❌ Error: Failed to execute command via Gmail API.");
+            replyWithError(issue, comment, "❌ Error: API failure.");
             addReaction(comment, ReactionContent.CONFUSED);
         }
     }
@@ -142,18 +134,15 @@ public class SecurityCommandProcessor {
     }
 
     private void replyWithError(GHIssue issue, GHIssueComment comment, String message) {
-        try { github.commentOnIssue(issue, "@" + comment.getUser().getLogin() + " " + message); } catch (IOException e) { LOG.error("Failed to reply", e); }
+        try { github.commentOnIssue(issue, "@" + comment.getUser().getLogin() + " " + message); } catch (IOException e) { LOG.error("Failed reply", e); }
     }
 
-    private void sendHelpMessage(GHIssue issue, GHIssueComment comment) {
-        try { github.commentOnIssue(issue, "@" + comment.getUser().getLogin() + " " + parser.getHelpMessage()); } catch (IOException e) { LOG.error("Failed help", e); }
-    }
-
-    private boolean hasAlreadyProcessed(GHIssueComment comment, String myLogin) throws IOException {
+    private boolean hasAlreadyProcessed(GHIssueComment comment) throws IOException {
+        String botLogin = parser.getBotName();
         for (GHReaction reaction : comment.listReactions()) {
             String user = reaction.getUser().getLogin();
             if ((reaction.getContent() == ReactionContent.EYES || reaction.getContent() == ReactionContent.CONFUSED) &&
-                    (user.equalsIgnoreCase(myLogin) || user.equalsIgnoreCase(myLogin + "[bot]"))) {
+                    (user.equalsIgnoreCase(botLogin) || user.equalsIgnoreCase(botLogin + "[bot]"))) {
                 processedComments.add(comment.getId());
                 return true;
             }

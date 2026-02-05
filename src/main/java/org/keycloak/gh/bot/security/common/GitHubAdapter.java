@@ -15,10 +15,13 @@ import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * Adapts GitHub API operations for the security domain with optimized searches.
+ */
 @ApplicationScoped
-public class GitHubSecurityAdapter {
+public class GitHubAdapter {
 
-    private static final Logger LOG = Logger.getLogger(GitHubSecurityAdapter.class);
+    private static final Logger LOG = Logger.getLogger(GitHubAdapter.class);
 
     @Inject
     GitHubInstallationProvider gitHubProvider;
@@ -63,9 +66,8 @@ public class GitHubSecurityAdapter {
         if (isAccessDenied()) return Optional.empty();
 
         String repoName = gitHubProvider.getRepositoryFullName();
-        // Optimization: Filter by label:source/email and is:open to reduce search scope
         String query = String.format("repo:%s \"%s\" label:%s is:open is:issue",
-                repoName, threadId, SecurityConstants.SOURCE_EMAIL);
+                repoName, threadId, Constants.SOURCE_EMAIL);
 
         PagedSearchIterable<GHIssue> issues = gitHubProvider.getGitHub().searchIssues().q(query).list();
         for (GHIssue issue : issues) {

@@ -9,12 +9,12 @@ import jakarta.inject.Inject;
  * Manages the scheduled execution of email synchronization and command processing tasks.
  */
 @ApplicationScoped
-public class SecurityEmailSyncScheduler {
+public class EmailSyncScheduler {
 
     @Inject
-    SecurityMailProcessor incomingMail;
+    MailProcessor incomingMail;
     @Inject
-    SecurityCommandProcessor securityCommandProcessor;
+    CommandProcessor commandProcessor;
 
     @Scheduled(every = "${bot.email.sync.interval:10s}", concurrentExecution = ConcurrentExecution.SKIP)
     public void syncGmailToGitHub() {
@@ -23,6 +23,6 @@ public class SecurityEmailSyncScheduler {
 
     @Scheduled(every = "${bot.command.process.interval:10s}", concurrentExecution = ConcurrentExecution.SKIP)
     public void processGitHubCommands() {
-        securityCommandProcessor.processCommands();
+        commandProcessor.processCommands();
     }
 }
