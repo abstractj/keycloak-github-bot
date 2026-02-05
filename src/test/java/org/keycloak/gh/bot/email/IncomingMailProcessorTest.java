@@ -55,7 +55,7 @@ public class IncomingMailProcessorTest {
 
     @Test
     public void testNewThreadCreatesIssue() throws IOException {
-        Message message = createMockMessage(THREAD_ID, "Vulnerability", "Body content", "user@test.com");
+        Message message = createMockMessage("Vulnerability", "Body content");
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
         when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
         when(githubAdapter.findIssueByThreadId(THREAD_ID)).thenReturn(Optional.empty());
@@ -74,7 +74,7 @@ public class IncomingMailProcessorTest {
 
     @Test
     public void testReplyAppendsComment() throws IOException {
-        Message message = createMockMessage(THREAD_ID, "Re: New Vuln", "More details here.", "user@test.com");
+        Message message = createMockMessage( "Re: New Vuln", "More details here.");
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
         when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
 
@@ -95,12 +95,12 @@ public class IncomingMailProcessorTest {
         verify(gmailAdapter, never()).fetchUnreadMessages(anyString());
     }
 
-    private Message createMockMessage(String threadId, String subject, String body, String from) {
-        Message msg = new Message().setId(UUID.randomUUID().toString()).setThreadId(threadId);
+    private Message createMockMessage(String subject, String body) {
+        Message msg = new Message().setId(UUID.randomUUID().toString()).setThreadId(THREAD_ID);
         MessagePart payload = new MessagePart();
         List<MessagePartHeader> headers = new ArrayList<>();
         headers.add(new MessagePartHeader().setName("Subject").setValue(subject));
-        headers.add(new MessagePartHeader().setName("From").setValue(from));
+        headers.add(new MessagePartHeader().setName("From").setValue("user@test.com"));
         headers.add(new MessagePartHeader().setName("To").setValue(targetGroup));
         headers.add(new MessagePartHeader().setName("List-ID").setValue("<" + targetGroup.replace("@", ".") + ">"));
         payload.setHeaders(headers);
