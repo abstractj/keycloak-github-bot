@@ -2,6 +2,7 @@ package org.keycloak.gh.bot.email;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 import org.keycloak.gh.bot.GitHubInstallationProvider;
 import org.kohsuke.github.GHIssue;
@@ -16,6 +17,7 @@ import java.util.Optional;
 
 /**
  * Wraps the GitHub API client to provide domain-specific methods for the bot.
+ * Acts as a Security Gatekeeper to ensure operations only occur on the allowed repository.
  */
 @ApplicationScoped
 public class GitHubAdapter {
@@ -25,15 +27,36 @@ public class GitHubAdapter {
     @Inject
     GitHubInstallationProvider gitHubProvider;
 
+    @ConfigProperty(name = "keycloak.security.repository")
+    String allowedRepository;
+
     private GHRepository cachedRepository;
+
+    /**
+     * Ensure that the GitHub installation is NOT bound to the configured secure repository.
+     * Prevents the leakage of information to the upstream.
+     */
+    public boolean isAccessDenied() {
+        String currentRepo = gitHubProvider.getRepositoryFullName();
+        boolean denied = currentRepo == null || !currentRepo.equalsIgnoreCase(allowedRepository);
+
+        if (denied) {
+            LOG.debugf("SECURITY: Access denied. Current repository '%s' does not match allowed repository '%s'.",
+                    currentRepo, allowedRepository);
+        }
+        return denied;
+    }
 
     private GHRepository getRepository() throws IOException {
         if (cachedRepository != null) {
             return cachedRepository;
         }
-        String fullRepoName = gitHubProvider.getRepositoryFullName();
-        if (fullRepoName == null) throw new IllegalStateException("Repository name is null.");
 
+        if (isAccessDenied()) {
+            throw new IllegalStateException("Operation aborted: Bot is not connected to the allowed repository.");
+        }
+
+        String fullRepoName = gitHubProvider.getRepositoryFullName();
         cachedRepository = gitHubProvider.getGitHub().getRepository(fullRepoName);
         return cachedRepository;
     }
@@ -50,6 +73,9 @@ public class GitHubAdapter {
     }
 
     public Optional<GHIssue> findIssueByThreadId(String threadId) throws IOException {
+        // Double check repository before searching
+        if (isAccessDenied()) return Optional.empty();
+
         String repoName = gitHubProvider.getRepositoryFullName();
         String query = String.format("repo:%s \"%s\" in:comments type:issue", repoName, threadId);
 

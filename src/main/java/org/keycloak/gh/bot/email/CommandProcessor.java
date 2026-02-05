@@ -58,6 +58,11 @@ public class CommandProcessor {
     private Instant lastPollTime = Instant.now().minus(10, ChronoUnit.MINUTES);
 
     public void processCommands() {
+        // Security Check: Fail fast if connected to the wrong repo
+        if (github.isAccessDenied()) {
+            return;
+        }
+
         try {
             String myLogin = parser.getBotName();
             if (myLogin == null || myLogin.isEmpty()) return;

@@ -35,6 +35,11 @@ public class IncomingMailProcessor {
     @Inject Throttler throttler;
 
     public void processUnreadEmails() {
+        // Security Check: Fail fast if connected to the wrong repo
+        if (github.isAccessDenied()) {
+            return;
+        }
+
         String query = "is:unread -from:" + botEmail;
 
         List<Message> messages = gmail.fetchUnreadMessages(query);

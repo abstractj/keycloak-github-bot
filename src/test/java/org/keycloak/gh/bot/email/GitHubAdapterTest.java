@@ -34,6 +34,9 @@ public class GitHubAdapterTest {
         String repoName = "keycloak/keycloak-private";
         String threadId = "abc12345";
 
+        // Fix: Manually inject the configuration property so the security check passes
+        gitHubAdapter.allowedRepository = repoName;
+
         GitHub mockGitHub = mock(GitHub.class);
         GHIssueSearchBuilder mockSearch = mock(GHIssueSearchBuilder.class);
 

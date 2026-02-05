@@ -53,6 +53,8 @@ public class IncomingMailProcessorTest {
 
     @BeforeEach
     public void setup() {
+        // Default safe state for tests: access is NOT denied (allowed)
+        when(githubAdapter.isAccessDenied()).thenReturn(false);
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(Collections.emptyList());
         when(gmailAdapter.getBody(any())).thenCallRealMethod();
         when(gmailAdapter.getHeadersMap(any())).thenCallRealMethod();
@@ -94,6 +96,18 @@ public class IncomingMailProcessorTest {
         verify(githubAdapter, never()).createIssue(anyString(), anyString());
         verify(gmailAdapter).markAsRead(message.getId());
         verify(throttler).throttle(any());
+    }
+
+    @Test
+    public void testIgnoresIfRepoAccessDenied() {
+        // Given the adapter reports access is denied
+        when(githubAdapter.isAccessDenied()).thenReturn(true);
+
+        // When
+        incomingMailProcessor.processUnreadEmails();
+
+        // Then
+        verify(gmailAdapter, never()).fetchUnreadMessages(anyString());
     }
 
     private Message createMockMessage(String threadId, String subject, String body, String from) {

@@ -14,7 +14,7 @@ public class EmailSyncScheduler {
     @Inject IncomingMailProcessor incomingMail;
     @Inject CommandProcessor commandProcessor;
 
-    @Scheduled(every = "${bot.email.sync.interval:60s}", concurrentExecution = ConcurrentExecution.SKIP)
+    @Scheduled(every = "${bot.email.sync.interval:10s}", concurrentExecution = ConcurrentExecution.SKIP)
     public void syncGmailToGitHub() {
         incomingMail.processUnreadEmails();
     }
