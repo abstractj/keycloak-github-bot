@@ -1,5 +1,6 @@
 package org.keycloak.gh.bot.email;
 
+import com.google.api.client.googleapis.json.GoogleJsonResponseException;
 import com.google.api.services.gmail.model.Message;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -18,8 +19,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Polls Gmail for unread messages, filters out bot auto-replies to prevent loops,
- * and synchronizes valid emails to GitHub.
+ * Orchestrates the fetching of emails and creation of GitHub issues.
  */
 @ApplicationScoped
 public class IncomingMailProcessor {
@@ -35,31 +35,39 @@ public class IncomingMailProcessor {
     @Inject Throttler throttler;
 
     public void processUnreadEmails() {
-        // Security Check: Fail fast if connected to the wrong repo
         if (github.isAccessDenied()) {
             return;
         }
 
         String query = "is:unread -from:" + botEmail;
+        List<Message> messages;
 
-        List<Message> messages = gmail.fetchUnreadMessages(query);
+        try {
+            messages = gmail.fetchUnreadMessages(query);
+        } catch (IOException e) {
+            LOG.warnf("Failed to fetch unread messages: %s", e.getMessage());
+            return;
+        }
+
         for (Message msgSummary : messages) {
-            processMessage(msgSummary);
-            throttler.throttle(Duration.ofSeconds(1));
+            boolean processed = processMessage(msgSummary);
+            if (processed) {
+                throttler.throttle(Duration.ofSeconds(1));
+            }
         }
     }
 
-    private void processMessage(Message msgSummary) {
-        Message msg = gmail.getMessage(msgSummary.getId());
-        if (msg == null) return;
-
+    private boolean processMessage(Message msgSummary) {
+        Message msg = null;
         try {
+            msg = gmail.getMessage(msgSummary.getId());
+
             Map<String, String> headers = gmail.getHeadersMap(msg);
             String from = headers.getOrDefault("From", "");
 
             if (isFromBot(from) || !isValidGroupMessage(headers)) {
-                gmail.markAsRead(msg.getId());
-                return;
+                gmail.markAsRead(msgSummary.getId());
+                return true;
             }
 
             String threadId = msg.getThreadId();
@@ -73,17 +81,32 @@ public class IncomingMailProcessor {
                 createNewIssue(threadId, subject, from, cleanBody);
             }
 
-            gmail.markAsRead(msg.getId());
+            gmail.markAsRead(msgSummary.getId());
+            return true;
 
-        } catch (IOException e) {
-            LOG.warnf("Deferred processing message %s due to API error (Rate Limit?): %s", msg.getId(), e.getMessage());
-        } catch (Exception e) {
-            LOG.errorf(e, "Failed to process message %s. Marking as read to prevent loop.", msg.getId());
-            try {
-                gmail.markAsRead(msg.getId());
-            } catch (Exception ex) {
-                LOG.error("Failed to mark poison message as read", ex);
+        } catch (GoogleJsonResponseException e) {
+            if (e.getStatusCode() >= 400 && e.getStatusCode() < 500) {
+                LOG.errorf(e, "Unrecoverable error processing message %s. Marking as read.", msgSummary.getId());
+                silentlyMarkAsRead(msgSummary.getId());
+                return true;
             }
+            LOG.warnf("Transient Gmail API error for message %s: %s", msgSummary.getId(), e.getMessage());
+            return false;
+        } catch (IOException e) {
+            LOG.warnf("Network/IO error processing message %s: %s", msgSummary.getId(), e.getMessage());
+            return false;
+        } catch (Exception e) {
+            LOG.errorf(e, "Unexpected error processing message %s. Marking as read to prevent poison loop.", msgSummary.getId());
+            silentlyMarkAsRead(msgSummary.getId());
+            return true;
+        }
+    }
+
+    private void silentlyMarkAsRead(String id) {
+        try {
+            gmail.markAsRead(id);
+        } catch (IOException ex) {
+            LOG.errorf("Failed to mark poison message %s as read. Manual intervention required.", id);
         }
     }
 

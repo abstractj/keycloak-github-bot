@@ -16,8 +16,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Wraps the GitHub API client to provide domain-specific methods for the bot.
- * Acts as a Security Gatekeeper to ensure operations only occur on the allowed repository.
+ * Adapts the GitHub API to provide scoped repository access and issue management.
  */
 @ApplicationScoped
 public class GitHubAdapter {
@@ -30,12 +29,6 @@ public class GitHubAdapter {
     @ConfigProperty(name = "keycloak.security.repository")
     String allowedRepository;
 
-    private GHRepository cachedRepository;
-
-    /**
-     * Ensure that the GitHub installation is NOT bound to the configured secure repository.
-     * Prevents the leakage of information to the upstream.
-     */
     public boolean isAccessDenied() {
         String currentRepo = gitHubProvider.getRepositoryFullName();
         boolean denied = currentRepo == null || !currentRepo.equalsIgnoreCase(allowedRepository);
@@ -48,17 +41,11 @@ public class GitHubAdapter {
     }
 
     private GHRepository getRepository() throws IOException {
-        if (cachedRepository != null) {
-            return cachedRepository;
-        }
-
         if (isAccessDenied()) {
             throw new IllegalStateException("Operation aborted: Bot is not connected to the allowed repository.");
         }
-
         String fullRepoName = gitHubProvider.getRepositoryFullName();
-        cachedRepository = gitHubProvider.getGitHub().getRepository(fullRepoName);
-        return cachedRepository;
+        return gitHubProvider.getGitHub().getRepository(fullRepoName);
     }
 
     public GHIssue createIssue(String subject, String body) throws IOException {
@@ -73,15 +60,14 @@ public class GitHubAdapter {
     }
 
     public Optional<GHIssue> findIssueByThreadId(String threadId) throws IOException {
-        // Double check repository before searching
         if (isAccessDenied()) return Optional.empty();
 
         String repoName = gitHubProvider.getRepositoryFullName();
         String query = String.format("repo:%s \"%s\" in:comments type:issue", repoName, threadId);
 
         PagedSearchIterable<GHIssue> issues = gitHubProvider.getGitHub().searchIssues().q(query).list();
-        if (issues.getTotalCount() > 0) {
-            return Optional.of(issues.iterator().next());
+        for (GHIssue issue : issues) {
+            return Optional.of(issue);
         }
         return Optional.empty();
     }

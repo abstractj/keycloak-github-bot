@@ -1,5 +1,6 @@
 package org.keycloak.gh.bot.email;
 
+import com.google.api.client.googleapis.json.GoogleJsonResponseException;
 import com.google.api.services.gmail.Gmail;
 import com.google.api.services.gmail.model.ListMessagesResponse;
 import com.google.api.services.gmail.model.Message;
@@ -12,7 +13,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.mail.internet.MimeMessage;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -25,12 +25,10 @@ import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 /**
- * A wrapper around the Google Gmail API client.
+ * Adapts the Gmail API to provide domain-specific email operations.
  */
 @ApplicationScoped
 public class GmailAdapter {
-
-    private static final Logger LOG = Logger.getLogger(GmailAdapter.class);
 
     @Inject
     Gmail gmail;
@@ -38,61 +36,43 @@ public class GmailAdapter {
     @ConfigProperty(name = "gmail.batch.size", defaultValue = "20")
     long batchSize;
 
-    public List<Message> fetchUnreadMessages(String query) {
-        try {
-            ListMessagesResponse listResponse = gmail.users().messages().list("me")
-                    .setQ(query)
-                    .setMaxResults(batchSize)
-                    .execute();
-            return listResponse.getMessages() != null ? listResponse.getMessages() : Collections.emptyList();
-        } catch (IOException e) {
-            LOG.error("Failed to fetch messages", e);
-            return Collections.emptyList();
-        }
+    public List<Message> fetchUnreadMessages(String query) throws IOException {
+        ListMessagesResponse listResponse = gmail.users().messages().list("me")
+                .setQ(query)
+                .setMaxResults(batchSize)
+                .execute();
+        return listResponse.getMessages() != null ? listResponse.getMessages() : Collections.emptyList();
     }
 
-    public Message getMessage(String id) {
-        try {
-            return gmail.users().messages().get("me", id).execute();
-        } catch (IOException e) {
-            LOG.errorf("Failed to get message %s", id, e);
-            return null;
-        }
+    public Message getMessage(String id) throws IOException {
+        return gmail.users().messages().get("me", id).execute();
     }
 
-    public Thread getThread(String threadId) {
-        try {
-            return gmail.users().threads().get("me", threadId).setFormat("METADATA").execute();
-        } catch (IOException e) {
-            LOG.errorf("Failed to get thread %s", threadId, e);
-            return null;
-        }
+    public Thread getThread(String threadId) throws IOException {
+        return gmail.users().threads().get("me", threadId).setFormat("METADATA").execute();
     }
 
-    public void markAsRead(String messageId) {
-        try {
-            ModifyMessageRequest mods = new ModifyMessageRequest().setRemoveLabelIds(Collections.singletonList("UNREAD"));
-            gmail.users().messages().modify("me", messageId, mods).execute();
-        } catch (IOException e) {
-            LOG.errorf("Failed to mark message %s as read", messageId, e);
-        }
+    public void markAsRead(String messageId) throws IOException {
+        ModifyMessageRequest mods = new ModifyMessageRequest().setRemoveLabelIds(Collections.singletonList("UNREAD"));
+        gmail.users().messages().modify("me", messageId, mods).execute();
     }
 
-    public void sendMessage(String threadId, MimeMessage email) {
+    public void sendMessage(String threadId, MimeMessage email) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         try {
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             email.writeTo(buffer);
-            String encodedEmail = Base64.getUrlEncoder().withoutPadding().encodeToString(buffer.toByteArray());
-
-            Message message = new Message();
-            message.setRaw(encodedEmail);
-            if (threadId != null) {
-                message.setThreadId(threadId);
-            }
-            gmail.users().messages().send("me", message).execute();
         } catch (Exception e) {
-            throw new RuntimeException("Failed to send email via Gmail API", e);
+            throw new IOException("Failed to serialize MimeMessage", e);
         }
+
+        String encodedEmail = Base64.getUrlEncoder().withoutPadding().encodeToString(buffer.toByteArray());
+
+        Message message = new Message();
+        message.setRaw(encodedEmail);
+        if (threadId != null) {
+            message.setThreadId(threadId);
+        }
+        gmail.users().messages().send("me", message).execute();
     }
 
     public String getHeader(Message message, String name) {

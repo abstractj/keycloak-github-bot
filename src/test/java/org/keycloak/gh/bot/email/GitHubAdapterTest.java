@@ -3,8 +3,10 @@ package org.keycloak.gh.bot.email;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.keycloak.gh.bot.GitHubInstallationProvider;
+import org.kohsuke.github.GHIssue;
 import org.kohsuke.github.GHIssueSearchBuilder;
 import org.kohsuke.github.GitHub;
+import org.kohsuke.github.PagedIterator;
 import org.kohsuke.github.PagedSearchIterable;
 import org.mockito.ArgumentCaptor;
 
@@ -40,12 +42,21 @@ public class GitHubAdapterTest {
         GitHub mockGitHub = mock(GitHub.class);
         GHIssueSearchBuilder mockSearch = mock(GHIssueSearchBuilder.class);
 
+        // Mock the iterable return type
+        PagedSearchIterable<GHIssue> mockIterable = mock(PagedSearchIterable.class);
+        PagedIterator<GHIssue> mockIterator = mock(PagedIterator.class);
+
         when(mockInstallationProvider.getRepositoryFullName()).thenReturn(repoName);
         when(mockInstallationProvider.getGitHub()).thenReturn(mockGitHub);
 
         when(mockGitHub.searchIssues()).thenReturn(mockSearch);
         when(mockSearch.q(anyString())).thenReturn(mockSearch);
-        when(mockSearch.list()).thenReturn(mock(PagedSearchIterable.class));
+        when(mockSearch.list()).thenReturn(mockIterable);
+
+        // Fix: PagedSearchIterable.iterator() returns PagedIterator, not generic Iterator.
+        // We must return a mock of PagedIterator and handle hasNext() to exit the loop.
+        when(mockIterable.iterator()).thenReturn(mockIterator);
+        when(mockIterator.hasNext()).thenReturn(false);
 
         gitHubAdapter.findIssueByThreadId(threadId);
 

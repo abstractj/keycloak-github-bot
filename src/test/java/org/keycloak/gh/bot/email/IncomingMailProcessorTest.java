@@ -52,7 +52,7 @@ public class IncomingMailProcessorTest {
     private static final String THREAD_ID = "123456789abcdef";
 
     @BeforeEach
-    public void setup() {
+    public void setup() throws IOException {
         // Default safe state for tests: access is NOT denied (allowed)
         when(githubAdapter.isAccessDenied()).thenReturn(false);
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(Collections.emptyList());
@@ -99,7 +99,7 @@ public class IncomingMailProcessorTest {
     }
 
     @Test
-    public void testIgnoresIfRepoAccessDenied() {
+    public void testIgnoresIfRepoAccessDenied() throws IOException {
         // Given the adapter reports access is denied
         when(githubAdapter.isAccessDenied()).thenReturn(true);
 
