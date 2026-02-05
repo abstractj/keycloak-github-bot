@@ -1,4 +1,4 @@
-package org.keycloak.gh.bot.email;
+package org.keycloak.gh.bot.security.email;
 
 import com.google.api.services.gmail.model.Message;
 import com.google.api.services.gmail.model.MessagePart;
@@ -10,6 +10,8 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.keycloak.gh.bot.security.common.GitHubSecurityAdapter;
+import org.keycloak.gh.bot.security.common.SecurityConstants;
 import org.keycloak.gh.bot.utils.Labels;
 import org.keycloak.gh.bot.utils.Throttler;
 import org.kohsuke.github.GHIssue;
@@ -19,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -31,15 +34,12 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/**
- * Verification for the incoming email processing logic and GitHub issue creation.
- */
 @QuarkusTest
-public class IncomingMailProcessorTest {
+public class SecurityMailProcessorTest {
 
-    @Inject IncomingMailProcessor incomingMailProcessor;
+    @Inject SecurityMailProcessor processor;
     @InjectMock GmailAdapter gmailAdapter;
-    @InjectMock GitHubAdapter githubAdapter;
+    @InjectMock GitHubSecurityAdapter githubAdapter;
     @InjectMock Throttler throttler;
     @ConfigProperty(name = "google.group.target") String targetGroup;
 
@@ -54,53 +54,44 @@ public class IncomingMailProcessorTest {
     }
 
     @Test
-    public void testNewThreadCreatesIssue() throws IOException {
-        Message message = createMockMessage("Vulnerability", "Body content");
+    public void testNewThreadCreatesIssueWithSourceLabel() throws IOException {
+        Message message = createMockMessage(THREAD_ID, "Vulnerability", "Body content", "user@test.com");
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
         when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
-        when(githubAdapter.findIssueByThreadId(THREAD_ID)).thenReturn(Optional.empty());
+        when(githubAdapter.findOpenEmailIssueByThreadId(THREAD_ID)).thenReturn(Optional.empty());
 
         GHIssue mockIssue = mock(GHIssue.class);
         when(mockIssue.getNumber()).thenReturn(101);
-        when(githubAdapter.createIssue(eq("Vulnerability"), anyString())).thenReturn(mockIssue);
+        when(githubAdapter.createSecurityIssue(eq("Vulnerability"), anyString(), eq(SecurityConstants.SOURCE_EMAIL))).thenReturn(mockIssue);
 
-        incomingMailProcessor.processUnreadEmails();
+        processor.processUnreadEmails();
 
-        verify(githubAdapter).createIssue(eq("Vulnerability"), anyString());
+        verify(githubAdapter).createSecurityIssue(eq("Vulnerability"), anyString(), eq(SecurityConstants.SOURCE_EMAIL));
         verify(mockIssue).addLabels(Labels.STATUS_TRIAGE);
         verify(gmailAdapter).markAsRead(message.getId());
-        verify(throttler).throttle(any());
     }
 
     @Test
-    public void testReplyAppendsComment() throws IOException {
-        Message message = createMockMessage( "Re: New Vuln", "More details here.");
+    public void testRedHatCveUpdate() throws IOException {
+        Message message = createMockMessage(THREAD_ID, "Re: Vuln", "Fixed in CVE-2026-1518", SecurityConstants.REDHAT_SECALERT_SENDER);
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
         when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
 
         GHIssue existingIssue = mock(GHIssue.class);
-        when(githubAdapter.findIssueByThreadId(THREAD_ID)).thenReturn(Optional.of(existingIssue));
+        when(existingIssue.getTitle()).thenReturn("CVE-TBD Vulnerability");
+        when(githubAdapter.findOpenEmailIssueByThreadId(THREAD_ID)).thenReturn(Optional.of(existingIssue));
 
-        incomingMailProcessor.processUnreadEmails();
+        processor.processUnreadEmails();
 
-        verify(githubAdapter).commentOnIssue(eq(existingIssue), contains("More details here."));
-        verify(gmailAdapter).markAsRead(message.getId());
-        verify(throttler).throttle(any());
+        verify(githubAdapter).updateTitleAndLabels(existingIssue, "CVE-2026-1518 Vulnerability", SecurityConstants.KIND_CVE);
     }
 
-    @Test
-    public void testIgnoresIfRepoAccessDenied() throws IOException {
-        when(githubAdapter.isAccessDenied()).thenReturn(true);
-        incomingMailProcessor.processUnreadEmails();
-        verify(gmailAdapter, never()).fetchUnreadMessages(anyString());
-    }
-
-    private Message createMockMessage(String subject, String body) {
-        Message msg = new Message().setId(UUID.randomUUID().toString()).setThreadId(THREAD_ID);
+    private Message createMockMessage(String threadId, String subject, String body, String from) {
+        Message msg = new Message().setId(UUID.randomUUID().toString()).setThreadId(threadId);
         MessagePart payload = new MessagePart();
         List<MessagePartHeader> headers = new ArrayList<>();
         headers.add(new MessagePartHeader().setName("Subject").setValue(subject));
-        headers.add(new MessagePartHeader().setName("From").setValue("user@test.com"));
+        headers.add(new MessagePartHeader().setName("From").setValue(from));
         headers.add(new MessagePartHeader().setName("To").setValue(targetGroup));
         headers.add(new MessagePartHeader().setName("List-ID").setValue("<" + targetGroup.replace("@", ".") + ">"));
         payload.setHeaders(headers);

@@ -1,10 +1,10 @@
-package org.keycloak.gh.bot.email;
+package org.keycloak.gh.bot.security.email;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.keycloak.gh.bot.GitHubInstallationProvider;
-import org.keycloak.gh.bot.email.CommandParser.Command;
-import org.keycloak.gh.bot.email.CommandParser.CommandType;
+import org.keycloak.gh.bot.security.common.SecurityCommandParser.Command;
+import org.keycloak.gh.bot.security.common.SecurityCommandParser.CommandType;
 
 import java.util.Optional;
 
@@ -18,11 +18,11 @@ import static org.mockito.Mockito.when;
  */
 public class CommandParserTest {
 
-    private CommandParser parser;
+    private org.keycloak.gh.bot.security.common.SecurityCommandParser parser;
 
     @BeforeEach
     public void setup() {
-        parser = new CommandParser();
+        parser = new org.keycloak.gh.bot.security.common.SecurityCommandParser();
         parser.gitHubProvider = mock(GitHubInstallationProvider.class);
         when(parser.gitHubProvider.getBotLogin()).thenReturn("keycloak-bot");
         parser.init();

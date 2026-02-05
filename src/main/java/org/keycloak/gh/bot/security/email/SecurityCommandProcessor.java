@@ -1,4 +1,4 @@
-package org.keycloak.gh.bot.email;
+package org.keycloak.gh.bot.security.email;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -26,18 +26,20 @@ import java.util.regex.Pattern;
  * Identifies and executes bot commands from GitHub comments.
  */
 @ApplicationScoped
-public class CommandProcessor {
+public class SecurityCommandProcessor {
 
-    private static final Logger LOG = Logger.getLogger(CommandProcessor.class);
-    private static final Pattern VISIBLE_MARKER_PATTERN = Pattern.compile(Pattern.quote(EmailConstants.GMAIL_THREAD_ID_PREFIX) + "\\s*([a-f0-9]+)");
+    private static final Logger LOG = Logger.getLogger(SecurityCommandProcessor.class);
+    private static final Pattern VISIBLE_MARKER_PATTERN = Pattern.compile(Pattern.quote(org.keycloak.gh.bot.security.common.EmailConstants.GMAIL_THREAD_ID_PREFIX) + "\\s*([a-f0-9]+)");
     private static final Pattern RAW_HEX_PATTERN = Pattern.compile("\\b([a-f0-9]{16})\\b");
     private static final int MAX_PROCESSED_HISTORY = 10000;
 
     @ConfigProperty(name = "google.group.target") String targetGroup;
     @ConfigProperty(name = "email.target.secalert") String secAlertEmail;
 
-    @Inject GitHubAdapter github;
-    @Inject CommandParser parser;
+    @Inject
+    org.keycloak.gh.bot.security.common.GitHubAdapter github;
+    @Inject
+    org.keycloak.gh.bot.security.common.SecurityCommandParser parser;
     @Inject MailSender mailSender;
 
     private final Set<Long> processedComments = Collections.synchronizedSet(Collections.newSetFromMap(
@@ -102,7 +104,7 @@ public class CommandProcessor {
         return Optional.empty();
     }
 
-    private void executeCommand(GHIssue issue, GHIssueComment comment, CommandParser.Command cmd, Optional<String> threadId) {
+    private void executeCommand(GHIssue issue, GHIssueComment comment, org.keycloak.gh.bot.security.common.SecurityCommandParser.Command cmd, Optional<String> threadId) {
         boolean success = false;
         ReactionContent reaction = ReactionContent.EYES;
 

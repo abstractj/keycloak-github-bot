@@ -1,4 +1,4 @@
-package org.keycloak.gh.bot.email;
+package org.keycloak.gh.bot.security.email;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,12 +23,12 @@ import static org.mockito.Mockito.when;
  */
 public class GitHubAdapterTest {
 
-    GitHubAdapter gitHubAdapter;
+    org.keycloak.gh.bot.security.common.GitHubAdapter gitHubAdapter;
     GitHubInstallationProvider mockInstallationProvider;
 
     @BeforeEach
     public void setup() {
-        gitHubAdapter = new GitHubAdapter();
+        gitHubAdapter = new org.keycloak.gh.bot.security.common.GitHubAdapter();
         mockInstallationProvider = mock(GitHubInstallationProvider.class);
         gitHubAdapter.gitHubProvider = mockInstallationProvider;
     }

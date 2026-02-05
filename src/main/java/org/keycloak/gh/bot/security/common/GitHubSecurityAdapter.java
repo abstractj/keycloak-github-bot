@@ -1,4 +1,4 @@
-package org.keycloak.gh.bot.email;
+package org.keycloak.gh.bot.security.common;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -15,13 +15,10 @@ import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 
-/**
- * Provides scoped repository access and issue management.
- */
 @ApplicationScoped
-public class GitHubAdapter {
+public class GitHubSecurityAdapter {
 
-    private static final Logger LOG = Logger.getLogger(GitHubAdapter.class);
+    private static final Logger LOG = Logger.getLogger(GitHubSecurityAdapter.class);
 
     @Inject
     GitHubInstallationProvider gitHubProvider;
@@ -45,30 +42,41 @@ public class GitHubAdapter {
         return gitHubProvider.getGitHub().getRepository(gitHubProvider.getRepositoryFullName());
     }
 
-    public GHIssue createSecurityIssue(String subject) throws IOException {
-        return createIssue(subject, EmailConstants.ISSUE_DESCRIPTION_TEMPLATE);
-    }
-
-    public GHIssue createIssue(String subject, String body) throws IOException {
-        GHIssue issue = getRepository().createIssue(subject).body(body).create();
-        LOG.debugf("🆕 Created Issue #%d", issue.getNumber());
+    public GHIssue createSecurityIssue(String subject, String body, String sourceLabel) throws IOException {
+        GHIssue issue = getRepository().createIssue(subject)
+                .body(body)
+                .label(sourceLabel)
+                .create();
+        LOG.debugf("🆕 Created Security Issue #%d from source %s", issue.getNumber(), sourceLabel);
         return issue;
     }
 
-    public void commentOnIssue(GHIssue issue, String commentBody) throws IOException {
-        issue.comment(commentBody);
-        LOG.debugf("💬 Commented on Issue #%d", issue.getNumber());
+    public void updateTitleAndLabels(GHIssue issue, String newTitle, String additionalLabel) throws IOException {
+        issue.setTitle(newTitle);
+        if (additionalLabel != null) {
+            issue.addLabels(additionalLabel);
+        }
+        LOG.debugf("📝 Updated Issue #%d: Title='%s', Added Label='%s'", issue.getNumber(), newTitle, additionalLabel);
     }
 
-    public Optional<GHIssue> findIssueByThreadId(String threadId) throws IOException {
+    public Optional<GHIssue> findOpenEmailIssueByThreadId(String threadId) throws IOException {
         if (isAccessDenied()) return Optional.empty();
+
         String repoName = gitHubProvider.getRepositoryFullName();
-        String query = String.format("repo:%s \"%s\" in:comments type:issue", repoName, threadId);
+        // Optimization: Filter by label:source/email and is:open to reduce search scope
+        String query = String.format("repo:%s \"%s\" label:%s is:open is:issue",
+                repoName, threadId, SecurityConstants.SOURCE_EMAIL);
+
         PagedSearchIterable<GHIssue> issues = gitHubProvider.getGitHub().searchIssues().q(query).list();
         for (GHIssue issue : issues) {
             return Optional.of(issue);
         }
         return Optional.empty();
+    }
+
+    public void commentOnIssue(GHIssue issue, String commentBody) throws IOException {
+        issue.comment(commentBody);
+        LOG.debugf("💬 Commented on Issue #%d", issue.getNumber());
     }
 
     public List<GHIssue> getIssuesUpdatedSince(Date since) throws IOException {

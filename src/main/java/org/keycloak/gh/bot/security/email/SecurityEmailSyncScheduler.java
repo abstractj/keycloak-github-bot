@@ -1,4 +1,4 @@
-package org.keycloak.gh.bot.email;
+package org.keycloak.gh.bot.security.email;
 
 import io.quarkus.scheduler.Scheduled;
 import io.quarkus.scheduler.Scheduled.ConcurrentExecution;
@@ -9,10 +9,12 @@ import jakarta.inject.Inject;
  * Manages the scheduled execution of email synchronization and command processing tasks.
  */
 @ApplicationScoped
-public class EmailSyncScheduler {
+public class SecurityEmailSyncScheduler {
 
-    @Inject IncomingMailProcessor incomingMail;
-    @Inject CommandProcessor commandProcessor;
+    @Inject
+    SecurityMailProcessor incomingMail;
+    @Inject
+    SecurityCommandProcessor securityCommandProcessor;
 
     @Scheduled(every = "${bot.email.sync.interval:10s}", concurrentExecution = ConcurrentExecution.SKIP)
     public void syncGmailToGitHub() {
@@ -21,6 +23,6 @@ public class EmailSyncScheduler {
 
     @Scheduled(every = "${bot.command.process.interval:10s}", concurrentExecution = ConcurrentExecution.SKIP)
     public void processGitHubCommands() {
-        commandProcessor.processCommands();
+        securityCommandProcessor.processCommands();
     }
 }

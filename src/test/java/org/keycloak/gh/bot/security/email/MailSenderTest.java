@@ -1,4 +1,4 @@
-package org.keycloak.gh.bot.email;
+package org.keycloak.gh.bot.security.email;
 
 import com.google.api.services.gmail.model.Message;
 import com.google.api.services.gmail.model.MessagePart;
@@ -25,8 +25,10 @@ import static org.mockito.Mockito.when;
 @QuarkusTest
 public class MailSenderTest {
 
-    @Inject MailSender mailSender;
-    @InjectMock GmailAdapter gmailAdapter;
+    @Inject
+    org.keycloak.gh.bot.security.email.MailSender mailSender;
+    @InjectMock
+    org.keycloak.gh.bot.security.email.GmailAdapter gmailAdapter;
     @ConfigProperty(name = "gmail.user.email") String botEmail;
 
     @Test

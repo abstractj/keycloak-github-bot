@@ -1,4 +1,4 @@
-package org.keycloak.gh.bot.email;
+package org.keycloak.gh.bot.security.common;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
  * Responsible for parsing raw text from GitHub comments into Command objects.
  */
 @ApplicationScoped
-public class CommandParser {
+public class SecurityCommandParser {
 
     @Inject
     GitHubInstallationProvider gitHubProvider;

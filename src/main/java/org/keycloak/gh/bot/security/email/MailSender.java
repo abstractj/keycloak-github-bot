@@ -1,4 +1,4 @@
-package org.keycloak.gh.bot.email;
+package org.keycloak.gh.bot.security.email;
 
 import com.google.api.services.gmail.model.Message;
 import jakarta.annotation.PostConstruct;
@@ -21,7 +21,8 @@ public class MailSender {
 
     @ConfigProperty(name = "gmail.user.email") String botEmail;
 
-    @Inject GmailAdapter gmail;
+    @Inject
+    GmailAdapter gmail;
 
     private Session mailSession;
 
@@ -92,10 +93,8 @@ public class MailSender {
     }
 
     private Message findLastHumanMessage(List<Message> history) {
-        // Iterate backwards to find the most recent message NOT from the bot
         for (int i = history.size() - 1; i >= 0; i--) {
             Message msg = history.get(i);
-            // Optimization: Get map once per message instead of repeatedly iterating parts
             Map<String, String> headers = gmail.getHeadersMap(msg);
             String from = headers.get("From");
 
@@ -103,7 +102,6 @@ public class MailSender {
                 return msg;
             }
         }
-        // Fallback: return the last message if everything seems to be from the bot (edge case)
         return history.get(history.size() - 1);
     }
 }

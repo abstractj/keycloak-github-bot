@@ -1,4 +1,4 @@
-package org.keycloak.gh.bot.email;
+package org.keycloak.gh.bot.security.email;
 
 import com.google.api.services.gmail.model.Message;
 import com.google.api.services.gmail.model.MessagePart;
@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class GmailAdapterTest {
 
     @Inject
-    GmailAdapter gmailAdapter;
+    org.keycloak.gh.bot.security.email.GmailAdapter gmailAdapter;
 
     @Test
     public void testGetHeaderCaseInsensitivity() {
