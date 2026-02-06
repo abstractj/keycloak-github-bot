@@ -15,7 +15,13 @@ import java.util.regex.Pattern;
 @ApplicationScoped
 public class CommandParser {
 
-    private static final Pattern COMMAND_PATTERN = Pattern.compile("^@(\\w+(?:-\\w+)?)\\s+/(new|reply)\\s+(\\w+)(?:\\s+\"([^\"]+)\")?(?:\\s+(.*))?", Pattern.DOTALL);
+    // Fixed Regex:
+    // 1. @([\\w-]+)      -> Bot name (allows hyphens)
+    // 2. /(\\w+)         -> Command action (new, reply, unknown)
+    // 3. ([\\w-]+)       -> Target (secalert, keycloak-security) - allows hyphens
+    // 4. "([^"]+)"       -> Subject (Optional, quoted)
+    // 5. (.*)            -> Body/Content (Optional, remainder)
+    private static final Pattern COMMAND_PATTERN = Pattern.compile("^@([\\w-]+)\\s+/(\\w+)\\s+([\\w-]+)(?:\\s+\"([^\"]+)\")?(?:\\s+(.*))?", Pattern.DOTALL);
 
     @Inject
     GitHubInstallationProvider gitHubProvider;

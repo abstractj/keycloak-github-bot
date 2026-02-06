@@ -50,6 +50,7 @@ public class GitHubAdapterTest {
         when(mockIterable.iterator()).thenReturn(mockIterator);
         when(mockIterator.hasNext()).thenReturn(false);
 
+        // Uses the new optimized method name
         adapter.findOpenEmailIssueByThreadId("thread-123");
 
         ArgumentCaptor<String> queryCaptor = ArgumentCaptor.forClass(String.class);

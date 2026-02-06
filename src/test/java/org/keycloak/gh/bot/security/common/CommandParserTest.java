@@ -52,6 +52,7 @@ public class CommandParserTest {
         Optional<CommandParser.Command> cmd = parser.parse(input);
 
         assertTrue(cmd.isPresent());
+        // Ensure CommandParser.java has UNKNOWN in CommandType enum
         assertEquals(CommandParser.CommandType.UNKNOWN, cmd.get().type());
     }
 

@@ -14,7 +14,7 @@ import java.io.IOException;
 import java.security.GeneralSecurityException;
 
 /**
- * Configuration producer for the Gmail API client.
+ * Configuration producer for the Gmail API client within the security domain.
  */
 @ApplicationScoped
 public class GmailConfig {
