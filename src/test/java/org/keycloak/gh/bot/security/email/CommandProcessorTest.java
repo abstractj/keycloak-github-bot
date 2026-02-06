@@ -48,7 +48,6 @@ public class CommandProcessorTest {
     public void setup() throws IOException {
         when(commandParser.getBotName()).thenReturn(botName);
         when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(Collections.emptyList());
-        // Default: Parser finds nothing
         when(commandParser.parse(anyString())).thenReturn(Optional.empty());
     }
 
@@ -59,7 +58,6 @@ public class CommandProcessorTest {
         String commandText = "/new secalert";
         when(comment.getBody()).thenReturn(commandText);
 
-        // Only return command for the specific text
         when(commandParser.parse(eq(commandText))).thenReturn(Optional.of(new CommandParser.Command(CommandParser.CommandType.NEW_SECALERT, Optional.of("Zero day"), "Body")));
 
         mockQueryComments(issue, List.of(comment));
@@ -80,18 +78,16 @@ public class CommandProcessorTest {
         GHIssue issue = mock(GHIssue.class);
         String validHexId = "abc123456";
 
-        // 1. Marker Comment (Should NOT be parsed as a command)
         GHIssueComment markerComment = mockComment("2");
         when(markerComment.getBody()).thenReturn("Some text " + Constants.GMAIL_THREAD_ID_PREFIX + " " + validHexId);
 
-        // 2. Command Comment
         GHIssueComment cmdComment = mockComment("3");
         String cmdText = "/reply keycloak-security";
         when(cmdComment.getBody()).thenReturn(cmdText);
 
-        // Fix: Specific match prevents markerComment from triggering execution
         when(commandParser.parse(eq(cmdText))).thenReturn(Optional.of(new CommandParser.Command(CommandParser.CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), "Reply Body")));
 
+        // Note: We include both comments in the "Recent" list for simplicity in testing
         mockQueryComments(issue, List.of(markerComment, cmdComment));
         when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(List.of(issue));
 
@@ -108,16 +104,13 @@ public class CommandProcessorTest {
         GHIssue issue = mock(GHIssue.class);
         String validHexId = "deadbeef123";
 
-        // 1. Marker Comment
         GHIssueComment markerComment = mockComment("4");
         when(markerComment.getBody()).thenReturn("Info " + Constants.SECALERT_THREAD_ID_PREFIX + " " + validHexId);
 
-        // 2. Command Comment
         GHIssueComment cmdComment = mockComment("5");
         String cmdText = "/reply secalert";
         when(cmdComment.getBody()).thenReturn(cmdText);
 
-        // Fix: Specific match
         when(commandParser.parse(eq(cmdText))).thenReturn(Optional.of(new CommandParser.Command(CommandParser.CommandType.REPLY_SECALERT, Optional.empty(), "Sec Reply")));
 
         mockQueryComments(issue, List.of(markerComment, cmdComment));
@@ -135,8 +128,15 @@ public class CommandProcessorTest {
         GHIssueCommentQueryBuilder queryBuilder = mock(GHIssueCommentQueryBuilder.class);
         PagedIterable<GHIssueComment> pagedIterable = mock(PagedIterable.class);
         PagedIterator<GHIssueComment> pagedIterator = mock(PagedIterator.class);
+
+        // Mock the basic queryComments() call (used for full fetch)
         when(issue.queryComments()).thenReturn(queryBuilder);
         when(queryBuilder.list()).thenReturn(pagedIterable);
+
+        // Mock the .since() call chain (used for recent fetch)
+        when(queryBuilder.since(any(Date.class))).thenReturn(queryBuilder);
+
+        // Iterators
         when(pagedIterable.iterator()).thenReturn(pagedIterator);
         when(pagedIterable.toList()).thenReturn(comments);
         java.util.Iterator<GHIssueComment> realIterator = comments.iterator();
@@ -148,7 +148,7 @@ public class CommandProcessorTest {
         GHIssueComment comment = mock(GHIssueComment.class);
         when(comment.getId()).thenReturn(new Random().nextLong());
         when(comment.getCreatedAt()).thenReturn(new Date());
-        when(comment.getBody()).thenReturn(""); // Default empty, overridden in tests
+        when(comment.getBody()).thenReturn("");
         GHUser user = mock(GHUser.class);
         when(user.getLogin()).thenReturn("tester");
         when(comment.getUser()).thenReturn(user);

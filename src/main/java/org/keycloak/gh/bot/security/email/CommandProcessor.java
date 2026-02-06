@@ -66,15 +66,36 @@ public class CommandProcessor {
 
     private void scanIssue(GHIssue issue) {
         try {
-            List<GHIssueComment> allComments = issue.queryComments().list().toList();
-
-            // Optimization: Find both thread IDs in a single pass
-            ThreadIds threadIds = findThreadIds(allComments);
             Instant threshold = lastPollTime.minus(1, ChronoUnit.MINUTES);
 
-            for (GHIssueComment comment : allComments) {
-                // Skip old comments or already processed ones
-                if (comment.getCreatedAt() != null && comment.getCreatedAt().toInstant().isBefore(threshold)) continue;
+            // 1. Optimization: Fetch ONLY recent comments first to check for activity.
+            // This prevents fetching the entire history for every minor update.
+            List<GHIssueComment> recentComments = issue.queryComments()
+                    .since(Date.from(threshold))
+                    .list()
+                    .toList();
+
+            if (recentComments.isEmpty()) {
+                return;
+            }
+
+            // 2. Identify actionable commands in recent comments
+            List<GHIssueComment> commandComments = recentComments.stream()
+                    .filter(c -> !processedComments.contains(c.getId()))
+                    .filter(c -> parser.parse(c.getBody()).isPresent()) // Quick pre-check
+                    .toList();
+
+            if (commandComments.isEmpty()) {
+                return;
+            }
+
+            // 3. Command detected! Now fetch full history to resolve Thread IDs.
+            // We only pay the cost of a full fetch when absolutely necessary.
+            List<GHIssueComment> allComments = issue.queryComments().list().toList();
+            ThreadIds threadIds = findThreadIds(allComments);
+
+            // 4. Execute the commands
+            for (GHIssueComment comment : commandComments) {
                 if (processedComments.contains(comment.getId())) continue;
 
                 parser.parse(comment.getBody()).ifPresent(cmd -> {
@@ -101,7 +122,6 @@ public class CommandProcessor {
             String body = comment.getBody();
             if (body == null) continue;
 
-            // Only search if we haven't found it yet
             if (reporter == null) {
                 Matcher m = REPORTER_THREAD_ID_PATTERN.matcher(body);
                 if (m.find()) reporter = m.group(1);
