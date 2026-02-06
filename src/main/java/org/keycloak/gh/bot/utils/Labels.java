@@ -20,6 +20,8 @@ public class Labels {
 
     public static final String FLAKY_TEST = "flaky-test";
 
+    public static final String STATUS_JIRA_SYNCED = "status/jira-synced";
+
     public static boolean hasLabel(GHIssue issue, String label) {
         return issue.getLabels().stream().filter(l -> l.getName().equals(label)).findFirst().isPresent();
     }

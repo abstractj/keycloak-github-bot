@@ -5,6 +5,7 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 import org.keycloak.gh.bot.GitHubInstallationProvider;
+import org.keycloak.gh.bot.utils.Labels;
 import org.kohsuke.github.GHIssue;
 import org.kohsuke.github.GHIssueState;
 import org.kohsuke.github.GHRepository;
@@ -89,13 +90,17 @@ public class GitHubAdapter {
                 .toList();
     }
 
+    /**
+     * Fetches open security issues that need Jira synchronization.
+     * Filters for 'kind/cve' AND excludes 'status/jira-synced'.
+     */
     public List<GHIssue> getOpenCveIssues() throws IOException {
         if (isAccessDenied()) return List.of();
 
-        // Search for open issues with the 'kind/cve' label
-        // This narrows the scope significantly compared to fetching all issues
         String repoName = gitHubProvider.getRepositoryFullName();
-        String query = String.format("repo:%s is:open label:%s", repoName, Constants.KIND_CVE);
+        // Query: repo:X label:kind/cve -label:status/jira-synced is:open
+        String query = String.format("repo:%s label:%s -label:%s is:open",
+                repoName, Constants.KIND_CVE, Labels.STATUS_JIRA_SYNCED);
 
         return gitHubProvider.getGitHub().searchIssues()
                 .q(query)

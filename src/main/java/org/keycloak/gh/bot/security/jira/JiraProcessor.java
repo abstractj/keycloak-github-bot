@@ -6,6 +6,7 @@ import org.jboss.logging.Logger;
 import org.keycloak.gh.bot.jira.JiraAdapter.JiraIssue;
 import org.keycloak.gh.bot.security.common.Constants;
 import org.keycloak.gh.bot.security.common.GitHubAdapter;
+import org.keycloak.gh.bot.utils.Labels;
 import org.kohsuke.github.GHIssue;
 
 import java.io.IOException;
@@ -31,7 +32,7 @@ public class JiraProcessor {
         if (github.isAccessDenied()) return;
 
         try {
-            // 1. Get all Open Security Issues from GitHub
+            // Fetch only 'kind/cve' issues that are NOT yet synced
             List<GHIssue> openIssues = github.getOpenCveIssues();
 
             for (GHIssue issue : openIssues) {
@@ -46,14 +47,12 @@ public class JiraProcessor {
         String title = issue.getTitle();
         if (title == null) return;
 
-        // 2. Extract CVE ID from GitHub Title
         Matcher matcher = CVE_PATTERN.matcher(title);
-        if (!matcher.find()) return; // Skip if no CVE ID found
+        if (!matcher.find()) return;
 
         String cveId = matcher.group();
         LOG.debugf("Checking Jira for %s (Issue #%d)", cveId, issue.getNumber());
 
-        // 3. Search Jira
         Optional<JiraIssue> jiraMatch = jira.findIssueByCve(cveId);
 
         if (jiraMatch.isPresent()) {
@@ -67,37 +66,35 @@ public class JiraProcessor {
     }
 
     private void updateGithubIssue(GHIssue issue, String cveId, JiraIssue jiraIssue) throws IOException {
-        // 4. Parse & Clean Data
+        // Parse & Clean Data
         String newTitle = parser.parseTitle(jiraIssue.summary());
         String extractedDesc = parser.parseDescription(jiraIssue.description());
 
-        // Apply Header
+        // Add Markdown header
         String finalBody = DESCRIPTION_HEADER + extractedDesc;
 
-        // Check for changes (handle potential nulls in existing issue body)
         String currentBody = issue.getBody() != null ? issue.getBody() : "";
 
+        // Detect changes
         boolean titleChanged = !issue.getTitle().equals(newTitle) && !newTitle.isBlank();
-
-        // Only update body if extraction succeeded (not blank) AND content is different
         boolean descChanged = !currentBody.equals(finalBody) && !extractedDesc.isBlank();
 
         if (titleChanged || descChanged) {
-            // Update Title
             if (titleChanged) {
                 issue.setTitle(newTitle);
             }
-
-            // Update Body (Description)
             if (descChanged) {
                 issue.setBody(finalBody);
             }
 
-            // Ensure label exists
+            // Ensure Kind/CVE label exists
             issue.addLabels(Constants.KIND_CVE);
 
-            LOG.infof("🔄 Synced #%d from Jira %s. TitleUpdated=%s, BodyUpdated=%s",
-                    issue.getNumber(), jiraIssue.key(), titleChanged, descChanged);
+            // Mark as Synced so we don't query it again (Optimization)
+            issue.addLabels(Labels.STATUS_JIRA_SYNCED);
+
+            LOG.infof("🔄 Synced #%d from Jira %s. TitleUpdated=%s, BodyUpdated=%s, Marked as %s",
+                    issue.getNumber(), jiraIssue.key(), titleChanged, descChanged, Labels.STATUS_JIRA_SYNCED);
         }
     }
 }
