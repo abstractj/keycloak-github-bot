@@ -41,6 +41,7 @@ public class CommandProcessor {
     @Inject CommandParser parser;
     @Inject MailSender mailSender;
 
+    // Cache to avoid re-processing comments in the short term
     private final Set<Long> processedComments = Collections.synchronizedSet(Collections.newSetFromMap(
             new LinkedHashMap<Long, Boolean>(10000 + 1, .75F, true) {
                 @Override protected boolean removeEldestEntry(Map.Entry<Long, Boolean> eldest) { return size() > 10000; }
@@ -67,19 +68,19 @@ public class CommandProcessor {
         try {
             List<GHIssueComment> allComments = issue.queryComments().list().toList();
 
-            Optional<String> reporterThreadId = findThreadId(allComments, REPORTER_THREAD_ID_PATTERN);
-            Optional<String> secAlertThreadId = findThreadId(allComments, SECALERT_THREAD_ID_PATTERN);
-
+            // Optimization: Find both thread IDs in a single pass
+            ThreadIds threadIds = findThreadIds(allComments);
             Instant threshold = lastPollTime.minus(1, ChronoUnit.MINUTES);
 
             for (GHIssueComment comment : allComments) {
+                // Skip old comments or already processed ones
                 if (comment.getCreatedAt() != null && comment.getCreatedAt().toInstant().isBefore(threshold)) continue;
                 if (processedComments.contains(comment.getId())) continue;
 
                 parser.parse(comment.getBody()).ifPresent(cmd -> {
                     try {
                         if (hasAlreadyProcessed(comment)) return;
-                        executeCommand(issue, comment, cmd, reporterThreadId, secAlertThreadId);
+                        executeCommand(issue, comment, cmd, threadIds);
                     } catch (IOException e) {
                         LOG.errorf(e, "Error on comment %d", comment.getId());
                     }
@@ -90,15 +91,32 @@ public class CommandProcessor {
         }
     }
 
-    private Optional<String> findThreadId(List<GHIssueComment> comments, Pattern pattern) {
+    private record ThreadIds(Optional<String> reporter, Optional<String> secAlert) {}
+
+    private ThreadIds findThreadIds(List<GHIssueComment> comments) {
+        String reporter = null;
+        String secAlert = null;
+
         for (GHIssueComment comment : comments) {
-            Matcher m = pattern.matcher(comment.getBody());
-            if (m.find()) return Optional.of(m.group(1));
+            String body = comment.getBody();
+            if (body == null) continue;
+
+            // Only search if we haven't found it yet
+            if (reporter == null) {
+                Matcher m = REPORTER_THREAD_ID_PATTERN.matcher(body);
+                if (m.find()) reporter = m.group(1);
+            }
+            if (secAlert == null) {
+                Matcher m = SECALERT_THREAD_ID_PATTERN.matcher(body);
+                if (m.find()) secAlert = m.group(1);
+            }
+
+            if (reporter != null && secAlert != null) break;
         }
-        return Optional.empty();
+        return new ThreadIds(Optional.ofNullable(reporter), Optional.ofNullable(secAlert));
     }
 
-    private void executeCommand(GHIssue issue, GHIssueComment comment, CommandParser.Command cmd, Optional<String> reporterThreadId, Optional<String> secAlertThreadId) throws IOException {
+    private void executeCommand(GHIssue issue, GHIssueComment comment, CommandParser.Command cmd, ThreadIds threadIds) throws IOException {
         boolean success = false;
         ReactionContent reaction = ReactionContent.EYES;
 
@@ -117,9 +135,8 @@ public class CommandProcessor {
                 }
             }
             case REPLY_KEYCLOAK_SECURITY -> {
-                if (reporterThreadId.isPresent()) {
-                    // Fix: No longer passing issue title. MailSender fetches subject from thread.
-                    success = mailSender.sendReply(reporterThreadId.get(), cmd.body(), targetGroup);
+                if (threadIds.reporter().isPresent()) {
+                    success = mailSender.sendReply(threadIds.reporter().get(), cmd.body(), targetGroup);
                 } else {
                     replyWithError(issue, comment, "❌ Error: Reporter Thread ID not found (cannot reply to keycloak-security).");
                     success = true;
@@ -127,9 +144,8 @@ public class CommandProcessor {
                 }
             }
             case REPLY_SECALERT -> {
-                if (secAlertThreadId.isPresent()) {
-                    // Fix: No longer passing issue title.
-                    success = mailSender.sendThreadedEmail(secAlertThreadId.get(), secAlertEmail, targetGroup, cmd.body());
+                if (threadIds.secAlert().isPresent()) {
+                    success = mailSender.sendThreadedEmail(threadIds.secAlert().get(), secAlertEmail, targetGroup, cmd.body());
                 } else {
                     replyWithError(issue, comment, "❌ Error: SecAlert Thread ID not found. Did you start a thread with /new secalert?");
                     success = true;
