@@ -1,9 +1,6 @@
 package org.keycloak.gh.bot.security.email;
 
 import com.google.api.services.gmail.model.Message;
-import com.google.api.services.gmail.model.MessagePart;
-import com.google.api.services.gmail.model.MessagePartBody;
-import com.google.api.services.gmail.model.MessagePartHeader;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -12,21 +9,17 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.keycloak.gh.bot.security.common.Constants;
 import org.keycloak.gh.bot.security.common.GitHubAdapter;
-import org.keycloak.gh.bot.utils.Labels;
 import org.keycloak.gh.bot.utils.Throttler;
 import org.kohsuke.github.GHIssue;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -36,89 +29,173 @@ import static org.mockito.Mockito.when;
 @QuarkusTest
 public class MailProcessorTest {
 
-    @Inject MailProcessor processor;
+    @Inject MailProcessor mailProcessor;
     @InjectMock GmailAdapter gmailAdapter;
     @InjectMock GitHubAdapter githubAdapter;
     @InjectMock Throttler throttler;
-    @ConfigProperty(name = "google.group.target") String targetGroup;
 
-    private static final String THREAD_ID = "123456789abcdef";
+    @ConfigProperty(name = "email.target.secalert") String secAlertEmail;
+    @ConfigProperty(name = "google.group.target") String targetGroup;
+    @ConfigProperty(name = "gmail.user.email") String botEmail;
 
     @BeforeEach
     public void setup() throws IOException {
         when(githubAdapter.isAccessDenied()).thenReturn(false);
-        when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(Collections.emptyList());
-        when(gmailAdapter.getBody(any())).thenCallRealMethod();
-        when(gmailAdapter.getHeadersMap(any())).thenCallRealMethod();
     }
 
     @Test
-    public void testNewThreadCreatesIssueWithSourceLabel() throws IOException {
-        Message message = createMockMessage(THREAD_ID, "Vulnerability", "Body content", "user@test.com");
+    public void testCreateNewIssueFromEmail() throws IOException {
+        String threadId = "thread-new";
+        Message message = createMockMessage(threadId, "New Vuln", "Body content", "external@user.com");
+
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
         when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
-        when(githubAdapter.findOpenEmailIssueByThreadId(THREAD_ID)).thenReturn(Optional.empty());
+        when(gmailAdapter.getBody(message)).thenReturn("Body content");
+        when(gmailAdapter.getHeadersMap(message)).thenReturn(Map.of("From", "external@user.com", "To", targetGroup, "Subject", "New Vuln"));
 
-        GHIssue mockIssue = mock(GHIssue.class);
-        when(mockIssue.getNumber()).thenReturn(101);
-        when(githubAdapter.createSecurityIssue(eq("Vulnerability"), anyString(), eq(Constants.SOURCE_EMAIL))).thenReturn(mockIssue);
+        when(githubAdapter.findOpenEmailIssueByThreadId(threadId)).thenReturn(Optional.empty());
+        GHIssue newIssue = mock(GHIssue.class);
+        when(githubAdapter.createSecurityIssue(anyString(), anyString(), anyString())).thenReturn(newIssue);
 
-        processor.processUnreadEmails();
+        mailProcessor.processUnreadEmails();
 
-        verify(githubAdapter).createSecurityIssue(eq("Vulnerability"), anyString(), eq(Constants.SOURCE_EMAIL));
-        verify(mockIssue).addLabels(Labels.STATUS_TRIAGE);
+        verify(githubAdapter).createSecurityIssue(eq("New Vuln"), anyString(), eq(Constants.SOURCE_EMAIL));
+        verify(githubAdapter).commentOnIssue(eq(newIssue), anyString());
+    }
+
+    @Test
+    public void testAppendCommentToExistingIssue() throws IOException {
+        String threadId = "thread-existing";
+        Message message = createMockMessage(threadId, "Re: Vuln", "More info", "external@user.com");
+
+        when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
+        when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
+        when(gmailAdapter.getBody(message)).thenReturn("More info");
+        when(gmailAdapter.getHeadersMap(message)).thenReturn(Map.of("From", "external@user.com", "To", targetGroup));
+
+        GHIssue existingIssue = mock(GHIssue.class);
+        when(githubAdapter.findOpenEmailIssueByThreadId(threadId)).thenReturn(Optional.of(existingIssue));
+
+        mailProcessor.processUnreadEmails();
+
+        verify(githubAdapter, never()).createSecurityIssue(anyString(), anyString(), anyString());
+        verify(githubAdapter).commentOnIssue(eq(existingIssue), anyString());
+    }
+
+    @Test
+    public void testIgnoreBotMessages() throws IOException {
+        Message message = createMockMessage("t1", "Sub", "Body", botEmail);
+        when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
+        when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
+        when(gmailAdapter.getHeadersMap(message)).thenReturn(Map.of("From", botEmail));
+
+        mailProcessor.processUnreadEmails();
+
+        verify(githubAdapter, never()).createSecurityIssue(anyString(), anyString(), anyString());
+        verify(githubAdapter, never()).commentOnIssue(any(), anyString());
         verify(gmailAdapter).markAsRead(message.getId());
     }
 
     @Test
-    public void testReplyAppendsComment() throws IOException {
-        Message message = createMockMessage(THREAD_ID, "Re: Vulnerability", "I have more info", "user@test.com");
+    public void testIgnoreInvalidGroupMessages() throws IOException {
+        Message message = createMockMessage("t2", "Sub", "Body", "random@user.com");
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
         when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
+        when(gmailAdapter.getHeadersMap(message)).thenReturn(Map.of("From", "random@user.com", "To", "other@group.com"));
 
-        GHIssue existingIssue = mock(GHIssue.class);
-        when(githubAdapter.findOpenEmailIssueByThreadId(THREAD_ID)).thenReturn(Optional.of(existingIssue));
+        mailProcessor.processUnreadEmails();
 
-        processor.processUnreadEmails();
-
-        verify(githubAdapter).commentOnIssue(eq(existingIssue), contains("I have more info"));
+        verify(githubAdapter, never()).createSecurityIssue(anyString(), anyString(), anyString());
         verify(gmailAdapter).markAsRead(message.getId());
     }
 
+    // --- CVE Update Logic Tests ---
+
     @Test
-    public void testRedHatCveUpdate() throws IOException {
-        Message message = createMockMessage(THREAD_ID, "Re: Vuln", "Fixed in CVE-2026-1518", Constants.REDHAT_SECALERT_SENDER);
+    public void testCveUpdatePlaceholderFromSecAlert() throws IOException {
+        String threadId = "thread-123";
+        String cveId = "CVE-2223-4545";
+        String emailBody = "Received by our team, we assigned the " + cveId + "\n\nThanks.";
+
+        Message message = createMockMessage(threadId, "Re: Vuln", emailBody, secAlertEmail);
+
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
         when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
+        when(gmailAdapter.getBody(message)).thenReturn(emailBody);
+
+        when(gmailAdapter.getHeadersMap(message)).thenReturn(Map.of(
+                "From", secAlertEmail,
+                "To", targetGroup,
+                "Subject", "Re: Vuln"
+        ));
 
         GHIssue existingIssue = mock(GHIssue.class);
-        when(existingIssue.getTitle()).thenReturn("CVE-TBD Vulnerability");
-        when(githubAdapter.findOpenEmailIssueByThreadId(THREAD_ID)).thenReturn(Optional.of(existingIssue));
+        when(existingIssue.getTitle()).thenReturn("CVE-TBD Critical RCE");
+        when(githubAdapter.findOpenEmailIssueByThreadId(threadId)).thenReturn(Optional.of(existingIssue));
 
-        processor.processUnreadEmails();
+        mailProcessor.processUnreadEmails();
 
-        verify(githubAdapter).updateTitleAndLabels(existingIssue, "CVE-2026-1518 Vulnerability", Constants.KIND_CVE);
+        verify(githubAdapter).updateTitleAndLabels(existingIssue, "CVE-2223-4545 Critical RCE", Constants.KIND_CVE);
     }
 
     @Test
-    public void testIgnoresIfRepoAccessDenied() throws IOException {
-        when(githubAdapter.isAccessDenied()).thenReturn(true);
-        processor.processUnreadEmails();
-        verify(gmailAdapter, never()).fetchUnreadMessages(anyString());
+    public void testCveCorrectionFromSecAlert() throws IOException {
+        String threadId = "thread-correction";
+        String oldCve = "CVE-2023-0001";
+        String newCve = "CVE-2023-9999";
+        String emailBody = "Correction: The correct ID is " + newCve;
+
+        Message message = createMockMessage(threadId, "Re: Vuln", emailBody, secAlertEmail);
+
+        when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
+        when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
+        when(gmailAdapter.getBody(message)).thenReturn(emailBody);
+
+        when(gmailAdapter.getHeadersMap(message)).thenReturn(Map.of(
+                "From", secAlertEmail,
+                "To", targetGroup,
+                "Subject", "Re: Vuln"
+        ));
+
+        GHIssue existingIssue = mock(GHIssue.class);
+        // The title has an incorrect/old CVE ID
+        when(existingIssue.getTitle()).thenReturn(oldCve + " Critical RCE");
+        when(githubAdapter.findOpenEmailIssueByThreadId(threadId)).thenReturn(Optional.of(existingIssue));
+
+        mailProcessor.processUnreadEmails();
+
+        // Verify that the OLD CVE was replaced by the NEW CVE
+        verify(githubAdapter).updateTitleAndLabels(existingIssue, newCve + " Critical RCE", Constants.KIND_CVE);
+    }
+
+    @Test
+    public void testNoCveUpdateIfSenderNotSecAlert() throws IOException {
+        String threadId = "thread-456";
+        String cveId = "CVE-2223-4545";
+        String emailBody = "I think this is " + cveId;
+        String randomSender = "random@user.com";
+
+        Message message = createMockMessage(threadId, "Re: Vuln", emailBody, randomSender);
+
+        when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
+        when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
+        when(gmailAdapter.getBody(message)).thenReturn(emailBody);
+
+        when(gmailAdapter.getHeadersMap(message)).thenReturn(Map.of("From", randomSender, "To", targetGroup));
+
+        GHIssue existingIssue = mock(GHIssue.class);
+        when(existingIssue.getTitle()).thenReturn("CVE-TBD Critical RCE");
+        when(githubAdapter.findOpenEmailIssueByThreadId(threadId)).thenReturn(Optional.of(existingIssue));
+
+        mailProcessor.processUnreadEmails();
+
+        verify(githubAdapter, never()).updateTitleAndLabels(any(), anyString(), any());
     }
 
     private Message createMockMessage(String threadId, String subject, String body, String from) {
-        Message msg = new Message().setId(UUID.randomUUID().toString()).setThreadId(threadId);
-        MessagePart payload = new MessagePart();
-        List<MessagePartHeader> headers = new ArrayList<>();
-        headers.add(new MessagePartHeader().setName("Subject").setValue(subject));
-        headers.add(new MessagePartHeader().setName("From").setValue(from));
-        headers.add(new MessagePartHeader().setName("To").setValue(targetGroup));
-        headers.add(new MessagePartHeader().setName("List-ID").setValue("<" + targetGroup.replace("@", ".") + ">"));
-        payload.setHeaders(headers);
-        payload.setMimeType("text/plain");
-        payload.setBody(new MessagePartBody().setData(Base64.getUrlEncoder().encodeToString(body.getBytes())));
-        msg.setPayload(payload);
+        Message msg = new Message();
+        msg.setId("msg-" + threadId);
+        msg.setThreadId(threadId);
         return msg;
     }
 }

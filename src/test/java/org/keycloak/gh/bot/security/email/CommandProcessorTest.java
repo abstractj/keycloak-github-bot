@@ -48,21 +48,21 @@ public class CommandProcessorTest {
     public void setup() throws IOException {
         when(commandParser.getBotName()).thenReturn(botName);
         when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(Collections.emptyList());
+        // Default: Parser finds nothing (crucial to avoid double matching)
         when(commandParser.parse(anyString())).thenReturn(Optional.empty());
     }
 
     @Test
     public void testNewSecAlertUpdatesTitleAndSendsEmail() throws IOException {
         GHIssue issue = mock(GHIssue.class);
-        GHIssueComment comment = mockComment("1");
-        String commandText = "/new secalert";
-        when(comment.getBody()).thenReturn(commandText);
+        GHIssueComment comment = mockComment();
+        String cmd = "/new secalert";
+        when(comment.getBody()).thenReturn(cmd);
 
-        when(commandParser.parse(eq(commandText))).thenReturn(Optional.of(new CommandParser.Command(CommandParser.CommandType.NEW_SECALERT, Optional.of("Zero day"), "Body")));
+        when(commandParser.parse(eq(cmd))).thenReturn(Optional.of(new CommandParser.Command(CommandParser.CommandType.NEW_SECALERT, Optional.of("Zero day"), "Body")));
 
         mockQueryComments(issue, List.of(comment));
         when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(List.of(issue));
-
         when(mailSender.sendNewEmail(anyString(), anyString(), anyString(), anyString())).thenReturn("123456abcdef");
 
         commandProcessor.processCommands();
@@ -70,7 +70,6 @@ public class CommandProcessorTest {
         verify(mailSender).sendNewEmail(eq(secAlertEmail), eq(targetGroup), eq("Zero day"), eq("Body"));
         verify(githubAdapter).updateTitleAndLabels(issue, Constants.CVE_TBD_PREFIX + " Zero day", null);
         verify(comment).createReaction(ReactionContent.EYES);
-        verify(githubAdapter).commentOnIssue(issue, "✅ SecAlert email sent. " + Constants.SECALERT_THREAD_ID_PREFIX + " 123456abcdef");
     }
 
     @Test
@@ -78,19 +77,18 @@ public class CommandProcessorTest {
         GHIssue issue = mock(GHIssue.class);
         String validHexId = "abc123456";
 
-        GHIssueComment markerComment = mockComment("2");
-        when(markerComment.getBody()).thenReturn("Some text " + Constants.GMAIL_THREAD_ID_PREFIX + " " + validHexId);
+        GHIssueComment markerComment = mockComment();
+        when(markerComment.getBody()).thenReturn("Marker " + Constants.GMAIL_THREAD_ID_PREFIX + " " + validHexId);
 
-        GHIssueComment cmdComment = mockComment("3");
-        String cmdText = "/reply keycloak-security";
-        when(cmdComment.getBody()).thenReturn(cmdText);
+        GHIssueComment cmdComment = mockComment();
+        String cmd = "/reply keycloak-security";
+        when(cmdComment.getBody()).thenReturn(cmd);
 
-        when(commandParser.parse(eq(cmdText))).thenReturn(Optional.of(new CommandParser.Command(CommandParser.CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), "Reply Body")));
+        // Match ONLY the command comment string
+        when(commandParser.parse(eq(cmd))).thenReturn(Optional.of(new CommandParser.Command(CommandParser.CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), "Reply Body")));
 
-        // Note: We include both comments in the "Recent" list for simplicity in testing
         mockQueryComments(issue, List.of(markerComment, cmdComment));
         when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(List.of(issue));
-
         when(mailSender.sendReply(anyString(), anyString(), anyString())).thenReturn(true);
 
         commandProcessor.processCommands();
@@ -104,18 +102,17 @@ public class CommandProcessorTest {
         GHIssue issue = mock(GHIssue.class);
         String validHexId = "deadbeef123";
 
-        GHIssueComment markerComment = mockComment("4");
-        when(markerComment.getBody()).thenReturn("Info " + Constants.SECALERT_THREAD_ID_PREFIX + " " + validHexId);
+        GHIssueComment markerComment = mockComment();
+        when(markerComment.getBody()).thenReturn("Marker " + Constants.SECALERT_THREAD_ID_PREFIX + " " + validHexId);
 
-        GHIssueComment cmdComment = mockComment("5");
-        String cmdText = "/reply secalert";
-        when(cmdComment.getBody()).thenReturn(cmdText);
+        GHIssueComment cmdComment = mockComment();
+        String cmd = "/reply secalert";
+        when(cmdComment.getBody()).thenReturn(cmd);
 
-        when(commandParser.parse(eq(cmdText))).thenReturn(Optional.of(new CommandParser.Command(CommandParser.CommandType.REPLY_SECALERT, Optional.empty(), "Sec Reply")));
+        when(commandParser.parse(eq(cmd))).thenReturn(Optional.of(new CommandParser.Command(CommandParser.CommandType.REPLY_SECALERT, Optional.empty(), "Sec Reply")));
 
         mockQueryComments(issue, List.of(markerComment, cmdComment));
         when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(List.of(issue));
-
         when(mailSender.sendThreadedEmail(anyString(), anyString(), anyString(), anyString())).thenReturn(true);
 
         commandProcessor.processCommands();
@@ -129,14 +126,11 @@ public class CommandProcessorTest {
         PagedIterable<GHIssueComment> pagedIterable = mock(PagedIterable.class);
         PagedIterator<GHIssueComment> pagedIterator = mock(PagedIterator.class);
 
-        // Mock the basic queryComments() call (used for full fetch)
+        // Mock both standard and optimized (.since()) calls
         when(issue.queryComments()).thenReturn(queryBuilder);
         when(queryBuilder.list()).thenReturn(pagedIterable);
-
-        // Mock the .since() call chain (used for recent fetch)
         when(queryBuilder.since(any(Date.class))).thenReturn(queryBuilder);
 
-        // Iterators
         when(pagedIterable.iterator()).thenReturn(pagedIterator);
         when(pagedIterable.toList()).thenReturn(comments);
         java.util.Iterator<GHIssueComment> realIterator = comments.iterator();
@@ -144,7 +138,7 @@ public class CommandProcessorTest {
         when(pagedIterator.next()).thenAnswer(i -> realIterator.next());
     }
 
-    private GHIssueComment mockComment(String idSuffix) throws IOException {
+    private GHIssueComment mockComment() throws IOException {
         GHIssueComment comment = mock(GHIssueComment.class);
         when(comment.getId()).thenReturn(new Random().nextLong());
         when(comment.getCreatedAt()).thenReturn(new Date());

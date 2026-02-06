@@ -32,6 +32,7 @@ public class MailProcessor {
 
     @ConfigProperty(name = "google.group.target") String targetGroup;
     @ConfigProperty(name = "gmail.user.email") String botEmail;
+    @ConfigProperty(name = "email.target.secalert") String secAlertEmail;
 
     @Inject GmailAdapter gmail;
     @Inject GitHubAdapter github;
@@ -76,7 +77,7 @@ public class MailProcessor {
 
             if (existingIssue.isPresent()) {
                 GHIssue issue = existingIssue.get();
-                handleRedHatUpdates(issue, from, cleanBody);
+                processCveUpdates(issue, from, cleanBody);
                 appendComment(issue, from, cleanBody, threadId);
             } else {
                 createNewIssue(threadId, subject, from, cleanBody);
@@ -90,14 +91,33 @@ public class MailProcessor {
         }
     }
 
-    private void handleRedHatUpdates(GHIssue issue, String from, String body) throws IOException {
-        if (from.contains(Constants.REDHAT_JIRA_SENDER) || from.contains(Constants.REDHAT_SECALERT_SENDER)) {
+    private void processCveUpdates(GHIssue issue, String from, String body) throws IOException {
+        // Trusted sources that are allowed to update the CVE ID
+        boolean isSecAlert = from != null && secAlertEmail != null && from.contains(secAlertEmail);
+
+        if (isSecAlert || from.contains(Constants.REDHAT_JIRA_SENDER)) {
             Matcher matcher = CVE_PATTERN.matcher(body);
             if (matcher.find()) {
-                String cveId = matcher.group();
+                String newCveId = matcher.group();
                 String currentTitle = issue.getTitle();
-                if (currentTitle.contains(Constants.CVE_TBD_PREFIX)) {
-                    github.updateTitleAndLabels(issue, currentTitle.replace(Constants.CVE_TBD_PREFIX, cveId), Constants.KIND_CVE);
+
+                if (currentTitle != null) {
+                    // Case 1: Replace placeholder CVE-TBD
+                    if (currentTitle.contains(Constants.CVE_TBD_PREFIX)) {
+                        String newTitle = currentTitle.replace(Constants.CVE_TBD_PREFIX, newCveId);
+                        github.updateTitleAndLabels(issue, newTitle, Constants.KIND_CVE);
+                    }
+                    // Case 2: Correction - Replace an existing CVE ID if it differs
+                    else {
+                        Matcher titleMatcher = CVE_PATTERN.matcher(currentTitle);
+                        if (titleMatcher.find()) {
+                            String oldCveId = titleMatcher.group();
+                            if (!oldCveId.equals(newCveId)) {
+                                String newTitle = currentTitle.replace(oldCveId, newCveId);
+                                github.updateTitleAndLabels(issue, newTitle, Constants.KIND_CVE);
+                            }
+                        }
+                    }
                 }
             }
         }
