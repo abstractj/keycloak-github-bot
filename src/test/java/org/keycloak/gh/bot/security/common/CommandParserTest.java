@@ -11,9 +11,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-/**
- * Unit tests for CommandParser within the common security package.
- */
 public class CommandParserTest {
 
     private CommandParser parser;
@@ -27,32 +24,42 @@ public class CommandParserTest {
     }
 
     @Test
-    public void testNewSecAlertPrefixesTbd() {
-        String input = "@keycloak-bot /new secalert \"Vulnerability\"\nContent.";
+    public void testNewSecAlertValid() {
+        String input = "@keycloak-bot /new secalert \"RCE in Admin Console\"\n\nFound a vulnerability.";
         Optional<CommandParser.Command> cmd = parser.parse(input);
 
         assertTrue(cmd.isPresent());
         assertEquals(CommandParser.CommandType.NEW_SECALERT, cmd.get().type());
-        assertEquals("CVE-TBD Vulnerability", cmd.get().subject().get());
+        // Fix: Expect Raw Subject (Processor handles prefixing now)
+        assertEquals("RCE in Admin Console", cmd.get().subject().get());
+        assertEquals("Found a vulnerability.", cmd.get().body());
     }
 
     @Test
-    public void testReplyParsing() {
-        String input = "@keycloak-bot /reply keycloak-security\nResponse.";
+    public void testReplyValid() {
+        String input = "@keycloak-bot /reply keycloak-security\n\nThis is a reply";
         Optional<CommandParser.Command> cmd = parser.parse(input);
 
         assertTrue(cmd.isPresent());
         assertEquals(CommandParser.CommandType.REPLY_KEYCLOAK_SECURITY, cmd.get().type());
-        assertEquals("Response.", cmd.get().body());
+        assertEquals("This is a reply", cmd.get().body());
     }
 
     @Test
-    public void testUnknownCommand() {
-        String input = "@keycloak-bot /unknown command";
+    public void testReplyWithJunkOnCommandLineFails() {
+        String input = "@keycloak-bot /reply keycloak-security meh";
         Optional<CommandParser.Command> cmd = parser.parse(input);
 
         assertTrue(cmd.isPresent());
-        // Ensure CommandParser.java has UNKNOWN in CommandType enum
+        assertEquals(CommandParser.CommandType.UNKNOWN, cmd.get().type());
+    }
+
+    @Test
+    public void testNewSecAlertWithJunkOnCommandLineFails() {
+        String input = "@keycloak-bot /new secalert \"Subject\" meh";
+        Optional<CommandParser.Command> cmd = parser.parse(input);
+
+        assertTrue(cmd.isPresent());
         assertEquals(CommandParser.CommandType.UNKNOWN, cmd.get().type());
     }
 

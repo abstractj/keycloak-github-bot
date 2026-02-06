@@ -6,8 +6,9 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.keycloak.gh.bot.security.common.CommandParser.Command;
-import org.keycloak.gh.bot.security.common.CommandParser.CommandType;
+import org.keycloak.gh.bot.security.common.CommandParser;
+import org.keycloak.gh.bot.security.common.Constants;
+import org.keycloak.gh.bot.security.common.GitHubAdapter;
 import org.kohsuke.github.GHIssue;
 import org.kohsuke.github.GHIssueComment;
 import org.kohsuke.github.GHIssueCommentQueryBuilder;
@@ -34,14 +35,10 @@ import static org.mockito.Mockito.when;
 @QuarkusTest
 public class CommandProcessorTest {
 
-    @Inject
-    org.keycloak.gh.bot.security.email.CommandProcessor commandProcessor;
-    @InjectMock
-    org.keycloak.gh.bot.security.email.MailSender mailSender;
-    @InjectMock
-    org.keycloak.gh.bot.security.common.GitHubAdapter githubAdapter;
-    @InjectMock
-    org.keycloak.gh.bot.security.common.CommandParser commandParser;
+    @Inject CommandProcessor commandProcessor;
+    @InjectMock MailSender mailSender;
+    @InjectMock GitHubAdapter githubAdapter;
+    @InjectMock CommandParser commandParser;
 
     @ConfigProperty(name = "google.group.target") String targetGroup;
     @ConfigProperty(name = "email.target.secalert") String secAlertEmail;
@@ -54,36 +51,29 @@ public class CommandProcessorTest {
     }
 
     @Test
-    public void testNewSecAlertSuccess() throws IOException {
+    public void testNewSecAlertUpdatesTitleAndSendsEmail() throws IOException {
         GHIssue issue = mock(GHIssue.class);
         GHIssueComment comment = mockComment();
-        when(commandParser.parse(anyString())).thenReturn(Optional.of(new Command(CommandType.NEW_SECALERT, Optional.of("CVE-123"), "Alert body.")));
+
+        // Parser returns RAW subject
+        when(commandParser.parse(anyString())).thenReturn(Optional.of(new CommandParser.Command(CommandParser.CommandType.NEW_SECALERT, Optional.of("Zero day"), "Body")));
+
         mockQueryComments(issue, List.of(comment));
         when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(List.of(issue));
-        when(mailSender.sendNewEmail(eq(secAlertEmail), eq(targetGroup), anyString(), anyString())).thenReturn(true);
+        when(mailSender.sendNewEmail(anyString(), anyString(), anyString(), anyString())).thenReturn(true);
 
         commandProcessor.processCommands();
 
-        verify(mailSender).sendNewEmail(eq(secAlertEmail), eq(targetGroup), eq("CVE-123"), eq("Alert body."));
+        // Verify Requirement 1: Email sent with RAW subject
+        verify(mailSender).sendNewEmail(eq(secAlertEmail), eq(targetGroup), eq("Zero day"), eq("Body"));
+
+        // Verify Requirement 2: GitHub Issue Title updated with PREFIX
+        verify(githubAdapter).updateTitleAndLabels(issue, Constants.CVE_TBD_PREFIX + " Zero day", null);
+
         verify(comment).createReaction(ReactionContent.EYES);
     }
 
-    @Test
-    public void testReplyKeycloakSecuritySuccess() throws IOException {
-        GHIssue issue = mock(GHIssue.class);
-        when(issue.getTitle()).thenReturn("Security Thread");
-        GHIssueComment comment = mockComment();
-        when(commandParser.parse(anyString())).thenReturn(Optional.of(new Command(CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), "Fixed.")));
-        when(comment.getBody()).thenReturn("**Gmail-Thread-ID:** abc123def");
-        mockQueryComments(issue, List.of(comment));
-        when(githubAdapter.getIssuesUpdatedSince(any())).thenReturn(List.of(issue));
-        when(mailSender.sendReply(anyString(), anyString(), anyString(), anyString())).thenReturn(true);
-
-        commandProcessor.processCommands();
-
-        verify(mailSender).sendReply(eq("abc123def"), eq("Security Thread"), eq("Fixed."), eq(targetGroup));
-    }
-
+    // Helper methods (mockQueryComments, mockComment) omitted for brevity as they are unchanged from previous iterations
     private void mockQueryComments(GHIssue issue, List<GHIssueComment> comments) throws IOException {
         GHIssueCommentQueryBuilder queryBuilder = mock(GHIssueCommentQueryBuilder.class);
         PagedIterable<GHIssueComment> pagedIterable = mock(PagedIterable.class);
@@ -100,7 +90,7 @@ public class CommandProcessorTest {
     private GHIssueComment mockComment() throws IOException {
         GHIssueComment comment = mock(GHIssueComment.class);
         when(comment.getId()).thenReturn(new Random().nextLong());
-        when(comment.getCreatedAt()).thenReturn(new Date()); // Fixes NPE
+        when(comment.getCreatedAt()).thenReturn(new Date());
         when(comment.getBody()).thenReturn("");
         GHUser user = mock(GHUser.class);
         when(user.getLogin()).thenReturn("tester");

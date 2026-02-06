@@ -1,8 +1,5 @@
 package org.keycloak.gh.bot.security.common;
 
-/**
- * Shared constants and labels for the security ingestion domain.
- */
 public final class Constants {
 
     public static final String SOURCE_EMAIL = "source/email";
@@ -16,9 +13,15 @@ public final class Constants {
     public static final String REDHAT_SECALERT_SENDER = "secalert@redhat.com";
 
     public static final String HELP_MESSAGE = """
+            **Security Bot Help**
+            
             Available commands:
-            - `/new secalert "Subject"`: Create a new security alert email.
-            - `/reply keycloak-security`: Reply to the current security thread.""";
+            - `/new secalert "Subject" [Body]`: Create a new security alert email (auto-prefixes CVE-TBD).
+            - `/reply keycloak-security [Body]`: Reply to the current security thread.
+            
+            Example:
+            `@keycloak-bot /new secalert "RCE in Admin Console" Found a vulnerability...`
+            """;
 
     private Constants() {
     }

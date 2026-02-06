@@ -15,22 +15,28 @@ import java.util.regex.Pattern;
 @ApplicationScoped
 public class CommandParser {
 
-    // Fixed Regex:
-    // 1. @([\\w-]+)      -> Bot name (allows hyphens)
-    // 2. /(\\w+)         -> Command action (new, reply, unknown)
-    // 3. ([\\w-]+)       -> Target (secalert, keycloak-security) - allows hyphens
-    // 4. "([^"]+)"       -> Subject (Optional, quoted)
-    // 5. (.*)            -> Body/Content (Optional, remainder)
-    private static final Pattern COMMAND_PATTERN = Pattern.compile("^@([\\w-]+)\\s+/(\\w+)\\s+([\\w-]+)(?:\\s+\"([^\"]+)\")?(?:\\s+(.*))?", Pattern.DOTALL);
-
     @Inject
     GitHubInstallationProvider gitHubProvider;
 
     private String botName;
+    private Pattern mentionPattern;
+
+    // Strict Regex to enforce body on new line
+    // Structure: Command Args -> Optional Horizontal Space -> (Newline + Body) OR End-of-String
+    private static final Pattern NEW_SECALERT_PATTERN = Pattern.compile("^/new\\s+secalert\\s+\"([^\"]+)\"[ \\t]*(?:[\\r\\n]+(.*))?$", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+    private static final Pattern REPLY_PATTERN = Pattern.compile("^/reply\\s+keycloak-security[ \\t]*(?:[\\r\\n]+(.*))?$", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
 
     @PostConstruct
     public void init() {
-        this.botName = gitHubProvider.getBotLogin();
+        String rawLogin = gitHubProvider.getBotLogin();
+        this.botName = (rawLogin != null && rawLogin.endsWith("[bot]"))
+                ? rawLogin.replace("[bot]", "")
+                : rawLogin;
+
+        if (this.botName == null) this.botName = "unknown";
+
+        String name = Pattern.quote(this.botName);
+        this.mentionPattern = Pattern.compile("(?mi)^@" + name + "(?:\\[bot\\])?\\b");
     }
 
     public String getBotName() {
@@ -44,25 +50,30 @@ public class CommandParser {
     public Optional<Command> parse(String body) {
         if (body == null || body.isBlank()) return Optional.empty();
 
-        Matcher matcher = COMMAND_PATTERN.matcher(body.trim());
-        if (matcher.find() && matcher.group(1).equalsIgnoreCase(botName)) {
-            String action = matcher.group(2);
-            String target = matcher.group(3);
-            String subject = matcher.group(4);
-            String content = matcher.group(5);
+        String trimmed = body.trim();
+        Matcher mentionMatcher = mentionPattern.matcher(trimmed);
 
-            if ("new".equals(action) && "secalert".equals(target)) {
-                String prefixedSubject = Constants.CVE_TBD_PREFIX + " " + (subject != null ? subject : "No Subject");
-                return Optional.of(new Command(CommandType.NEW_SECALERT, Optional.of(prefixedSubject), content));
-            }
-
-            if ("reply".equals(action) && "keycloak-security".equals(target)) {
-                return Optional.of(new Command(CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), content));
-            }
-
-            return Optional.of(new Command(CommandType.UNKNOWN, Optional.empty(), null));
+        if (!mentionMatcher.find()) {
+            return Optional.empty();
         }
-        return Optional.empty();
+
+        String args = trimmed.substring(mentionMatcher.end()).trim();
+
+        Matcher newMatcher = NEW_SECALERT_PATTERN.matcher(args);
+        if (newMatcher.matches()) {
+            String subject = newMatcher.group(1); // Raw Subject
+            String content = newMatcher.group(2);
+            // Fix: Return raw subject, let Processor handle the prefix
+            return Optional.of(new Command(CommandType.NEW_SECALERT, Optional.of(subject), content != null ? content : ""));
+        }
+
+        Matcher replyMatcher = REPLY_PATTERN.matcher(args);
+        if (replyMatcher.matches()) {
+            String content = replyMatcher.group(1);
+            return Optional.of(new Command(CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), content != null ? content : ""));
+        }
+
+        return Optional.of(new Command(CommandType.UNKNOWN, Optional.empty(), args));
     }
 
     public enum CommandType {

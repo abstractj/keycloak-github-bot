@@ -72,6 +72,21 @@ public class MailProcessorTest {
     }
 
     @Test
+    public void testReplyAppendsComment() throws IOException {
+        Message message = createMockMessage(THREAD_ID, "Re: Vulnerability", "I have more info", "user@test.com");
+        when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
+        when(gmailAdapter.getMessage(message.getId())).thenReturn(message);
+
+        GHIssue existingIssue = mock(GHIssue.class);
+        when(githubAdapter.findOpenEmailIssueByThreadId(THREAD_ID)).thenReturn(Optional.of(existingIssue));
+
+        processor.processUnreadEmails();
+
+        verify(githubAdapter).commentOnIssue(eq(existingIssue), contains("I have more info"));
+        verify(gmailAdapter).markAsRead(message.getId());
+    }
+
+    @Test
     public void testRedHatCveUpdate() throws IOException {
         Message message = createMockMessage(THREAD_ID, "Re: Vuln", "Fixed in CVE-2026-1518", Constants.REDHAT_SECALERT_SENDER);
         when(gmailAdapter.fetchUnreadMessages(anyString())).thenReturn(List.of(message));
@@ -88,7 +103,6 @@ public class MailProcessorTest {
 
     @Test
     public void testIgnoresIfRepoAccessDenied() throws IOException {
-        // Restored missing test case
         when(githubAdapter.isAccessDenied()).thenReturn(true);
         processor.processUnreadEmails();
         verify(gmailAdapter, never()).fetchUnreadMessages(anyString());

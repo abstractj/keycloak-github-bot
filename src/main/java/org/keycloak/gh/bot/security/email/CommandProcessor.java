@@ -25,9 +25,6 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Scans GitHub security issues for bot commands and handles their execution.
- */
 @ApplicationScoped
 public class CommandProcessor {
 
@@ -67,6 +64,7 @@ public class CommandProcessor {
 
     private void scanIssue(GHIssue issue) {
         try {
+            // Optimization: Paginate or limit if issues have massive comment threads
             List<GHIssueComment> allComments = issue.queryComments().list().toList();
             Optional<String> threadIdOpt = findThreadId(allComments);
             Instant threshold = lastPollTime.minus(1, ChronoUnit.MINUTES);
@@ -101,22 +99,36 @@ public class CommandProcessor {
         return Optional.empty();
     }
 
-    private void executeCommand(GHIssue issue, GHIssueComment comment, CommandParser.Command cmd, Optional<String> threadId) {
+    private void executeCommand(GHIssue issue, GHIssueComment comment, CommandParser.Command cmd, Optional<String> threadId) throws IOException {
         boolean success = false;
         ReactionContent reaction = ReactionContent.EYES;
 
         switch (cmd.type()) {
             case NEW_SECALERT -> {
-                success = mailSender.sendNewEmail(secAlertEmail, targetGroup, cmd.subject().orElse("No Subject"), cmd.body());
+                String rawSubject = cmd.subject().orElse("No Subject");
+
+                // Requirement 1: Email Subject remains exactly as provided
+                success = mailSender.sendNewEmail(secAlertEmail, targetGroup, rawSubject, cmd.body());
+
+                // Requirement 2: GitHub Issue Title gets the CVE-TBD prefix
+                if (success) {
+                    String prefixedTitle = Constants.CVE_TBD_PREFIX + " " + rawSubject;
+                    github.updateTitleAndLabels(issue, prefixedTitle, null);
+                }
             }
             case REPLY_KEYCLOAK_SECURITY -> {
                 if (threadId.isPresent()) {
                     success = mailSender.sendReply(threadId.get(), issue.getTitle(), cmd.body(), targetGroup);
                 } else {
-                    replyWithError(issue, comment, "❌ Error: Thread ID not found.");
+                    replyWithError(issue, comment, "❌ Error: Gmail Thread ID not found in this issue.");
                     success = true;
                     reaction = ReactionContent.CONFUSED;
                 }
+            }
+            case UNKNOWN -> {
+                sendHelpMessage(issue, comment);
+                success = true;
+                reaction = ReactionContent.CONFUSED;
             }
         }
 
@@ -124,7 +136,7 @@ public class CommandProcessor {
             processedComments.add(comment.getId());
             addReaction(comment, reaction);
         } else {
-            replyWithError(issue, comment, "❌ Error: API failure.");
+            replyWithError(issue, comment, "❌ Error: Failed to execute command via Gmail API.");
             addReaction(comment, ReactionContent.CONFUSED);
         }
     }
@@ -135,6 +147,10 @@ public class CommandProcessor {
 
     private void replyWithError(GHIssue issue, GHIssueComment comment, String message) {
         try { github.commentOnIssue(issue, "@" + comment.getUser().getLogin() + " " + message); } catch (IOException e) { LOG.error("Failed reply", e); }
+    }
+
+    private void sendHelpMessage(GHIssue issue, GHIssueComment comment) {
+        try { github.commentOnIssue(issue, "@" + comment.getUser().getLogin() + "\n" + parser.getHelpMessage()); } catch (IOException e) { LOG.error("Failed help", e); }
     }
 
     private boolean hasAlreadyProcessed(GHIssueComment comment) throws IOException {
