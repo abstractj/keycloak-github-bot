@@ -5,6 +5,7 @@ import io.quarkus.scheduler.Scheduled.ConcurrentExecution;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
+import org.keycloak.gh.bot.security.jira.JiraProcessor;
 
 /**
  * Manages the scheduled execution of security email synchronization and command tasks.
@@ -16,6 +17,7 @@ public class EmailSyncScheduler {
 
     @Inject MailProcessor mailProcessor;
     @Inject CommandProcessor commandProcessor;
+    @Inject JiraProcessor jiraProcessor;
 
     @Scheduled(every = "${bot.email.sync.interval:10s}", concurrentExecution = ConcurrentExecution.SKIP)
     public void syncGmailToGitHub() {
@@ -27,5 +29,12 @@ public class EmailSyncScheduler {
     public void processGitHubCommands() {
         LOG.trace("Processing Security Commands...");
         commandProcessor.processCommands();
+    }
+
+    // New: Sync Jira updates (Default: Every 1 hour)
+    @Scheduled(every = "${bot.jira.sync.interval:1h}", concurrentExecution = ConcurrentExecution.SKIP)
+    public void syncJiraToGitHub() {
+        LOG.info("Syncing Jira Updates...");
+        jiraProcessor.processJiraUpdates();
     }
 }

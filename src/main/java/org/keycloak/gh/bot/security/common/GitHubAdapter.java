@@ -88,4 +88,18 @@ public class GitHubAdapter {
                 .list()
                 .toList();
     }
+
+    public List<GHIssue> getOpenCveIssues() throws IOException {
+        if (isAccessDenied()) return List.of();
+
+        // Search for open issues with the 'kind/cve' label
+        // This narrows the scope significantly compared to fetching all issues
+        String repoName = gitHubProvider.getRepositoryFullName();
+        String query = String.format("repo:%s is:open label:%s", repoName, Constants.KIND_CVE);
+
+        return gitHubProvider.getGitHub().searchIssues()
+                .q(query)
+                .list()
+                .toList();
+    }
 }
