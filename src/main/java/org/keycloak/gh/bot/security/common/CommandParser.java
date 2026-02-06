@@ -9,9 +9,6 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Parses GitHub comment commands and enforces security-specific subject rules.
- */
 @ApplicationScoped
 public class CommandParser {
 
@@ -21,10 +18,11 @@ public class CommandParser {
     private String botName;
     private Pattern mentionPattern;
 
-    // Strict Regex to enforce body on new line
-    // Structure: Command Args -> Optional Horizontal Space -> (Newline + Body) OR End-of-String
+    // Regex Patterns
     private static final Pattern NEW_SECALERT_PATTERN = Pattern.compile("^/new\\s+secalert\\s+\"([^\"]+)\"[ \\t]*(?:[\\r\\n]+(.*))?$", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
     private static final Pattern REPLY_PATTERN = Pattern.compile("^/reply\\s+keycloak-security[ \\t]*(?:[\\r\\n]+(.*))?$", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+    // New: /reply secalert
+    private static final Pattern REPLY_SECALERT_PATTERN = Pattern.compile("^/reply\\s+secalert[ \\t]*(?:[\\r\\n]+(.*))?$", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
 
     @PostConstruct
     public void init() {
@@ -33,9 +31,7 @@ public class CommandParser {
                 ? rawLogin.replace("[bot]", "")
                 : rawLogin;
 
-        if (this.botName == null) this.botName = "unknown";
-
-        String name = Pattern.quote(this.botName);
+        String name = Pattern.quote(this.botName != null ? this.botName : "unknown");
         this.mentionPattern = Pattern.compile("(?mi)^@" + name + "(?:\\[bot\\])?\\b");
     }
 
@@ -53,31 +49,30 @@ public class CommandParser {
         String trimmed = body.trim();
         Matcher mentionMatcher = mentionPattern.matcher(trimmed);
 
-        if (!mentionMatcher.find()) {
-            return Optional.empty();
-        }
+        if (!mentionMatcher.find()) return Optional.empty();
 
         String args = trimmed.substring(mentionMatcher.end()).trim();
 
         Matcher newMatcher = NEW_SECALERT_PATTERN.matcher(args);
         if (newMatcher.matches()) {
-            String subject = newMatcher.group(1); // Raw Subject
-            String content = newMatcher.group(2);
-            // Fix: Return raw subject, let Processor handle the prefix
-            return Optional.of(new Command(CommandType.NEW_SECALERT, Optional.of(subject), content != null ? content : ""));
+            return Optional.of(new Command(CommandType.NEW_SECALERT, Optional.of(newMatcher.group(1)), newMatcher.group(2)));
         }
 
         Matcher replyMatcher = REPLY_PATTERN.matcher(args);
         if (replyMatcher.matches()) {
-            String content = replyMatcher.group(1);
-            return Optional.of(new Command(CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), content != null ? content : ""));
+            return Optional.of(new Command(CommandType.REPLY_KEYCLOAK_SECURITY, Optional.empty(), replyMatcher.group(1)));
+        }
+
+        Matcher replySecAlertMatcher = REPLY_SECALERT_PATTERN.matcher(args);
+        if (replySecAlertMatcher.matches()) {
+            return Optional.of(new Command(CommandType.REPLY_SECALERT, Optional.empty(), replySecAlertMatcher.group(1)));
         }
 
         return Optional.of(new Command(CommandType.UNKNOWN, Optional.empty(), args));
     }
 
     public enum CommandType {
-        NEW_SECALERT, REPLY_KEYCLOAK_SECURITY, UNKNOWN
+        NEW_SECALERT, REPLY_KEYCLOAK_SECURITY, REPLY_SECALERT, UNKNOWN
     }
 
     public record Command(CommandType type, Optional<String> subject, String body) {}

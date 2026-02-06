@@ -31,7 +31,7 @@ public class MailSender {
         this.mailSession = Session.getDefaultInstance(new Properties(), null);
     }
 
-    public boolean sendNewEmail(String to, String cc, String subject, String body) {
+    public String sendNewEmail(String to, String cc, String subject, String body) {
         try {
             MimeMessage email = createBaseMessage();
             email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(to));
@@ -41,32 +41,63 @@ public class MailSender {
             email.setSubject(subject);
             email.setText(body);
 
-            gmail.sendMessage(null, email);
-            return true;
+            Message sentMessage = gmail.sendMessage(null, email);
+            return sentMessage != null ? sentMessage.getThreadId() : null;
         } catch (Exception e) {
             LOG.error("Failed to send new email", e);
+            return null;
+        }
+    }
+
+    public boolean sendThreadedEmail(String threadId, String to, String cc, String body) {
+        try {
+            com.google.api.services.gmail.model.Thread thread = gmail.getThread(threadId);
+            if (thread == null || thread.getMessages() == null || thread.getMessages().isEmpty()) return false;
+
+            Message lastMsg = thread.getMessages().get(thread.getMessages().size() - 1);
+            Map<String, String> headers = gmail.getHeadersMap(lastMsg);
+
+            MimeMessage email = createBaseMessage();
+            email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(to));
+            if (cc != null && !cc.isBlank()) {
+                email.addRecipient(jakarta.mail.Message.RecipientType.CC, new InternetAddress(cc));
+            }
+
+            setSubjectFromOriginal(email, headers);
+            setupThreadingHeaders(email, headers);
+
+            // Fix: Body was missing here!
+            email.setText(body);
+
+            gmail.sendMessage(threadId, email);
+            return true;
+        } catch (Exception e) {
+            LOG.error("Failed to send threaded email", e);
             return false;
         }
     }
 
-    public boolean sendReply(String threadId, String subject, String body, String ccTarget) {
+    public boolean sendReply(String threadId, String body, String ccTarget) {
         try {
             com.google.api.services.gmail.model.Thread thread = gmail.getThread(threadId);
-            if (thread == null || thread.getMessages() == null) return false;
+            if (thread == null || thread.getMessages() == null || thread.getMessages().isEmpty()) return false;
 
-            Message targetMsg = findLastHumanMessage(thread.getMessages());
-            if (targetMsg == null) return false;
+            Message lastMsg = thread.getMessages().get(thread.getMessages().size() - 1);
+            Map<String, String> threadingHeaders = gmail.getHeadersMap(lastMsg);
 
-            Map<String, String> headers = gmail.getHeadersMap(targetMsg);
+            Message lastHumanMsg = findLastHumanMessage(thread.getMessages());
+            if (lastHumanMsg == null) return false;
+
+            Map<String, String> recipientHeaders = gmail.getHeadersMap(lastHumanMsg);
+            String sender = recipientHeaders.get("From");
 
             MimeMessage email = createBaseMessage();
-            setupThreadingHeaders(email, headers);
+            setupThreadingHeaders(email, threadingHeaders);
 
-            String sender = headers.get("From");
             if (sender != null) email.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(sender));
             if (ccTarget != null) email.addRecipient(jakarta.mail.Message.RecipientType.CC, new InternetAddress(ccTarget));
 
-            email.setSubject(subject.startsWith("Re:") ? subject : "Re: " + subject);
+            setSubjectFromOriginal(email, threadingHeaders);
             email.setText(body);
 
             gmail.sendMessage(threadId, email);
@@ -81,6 +112,14 @@ public class MailSender {
         MimeMessage email = new MimeMessage(mailSession);
         email.setFrom(new InternetAddress(botEmail));
         return email;
+    }
+
+    private void setSubjectFromOriginal(MimeMessage email, Map<String, String> headers) throws Exception {
+        String originalSubject = headers.getOrDefault("Subject", "No Subject");
+        String newSubject = originalSubject.toLowerCase().startsWith("re:")
+                ? originalSubject
+                : "Re: " + originalSubject;
+        email.setSubject(newSubject);
     }
 
     private void setupThreadingHeaders(MimeMessage email, Map<String, String> headers) throws Exception {

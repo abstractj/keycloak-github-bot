@@ -52,7 +52,7 @@ public class GmailAdapter {
         gmail.users().messages().modify("me", messageId, mods).execute();
     }
 
-    public void sendMessage(String threadId, MimeMessage email) throws IOException {
+    public Message sendMessage(String threadId, MimeMessage email) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         try {
             email.writeTo(buffer);
@@ -65,11 +65,7 @@ public class GmailAdapter {
         if (threadId != null) {
             message.setThreadId(threadId);
         }
-        gmail.users().messages().send("me", message).execute();
-    }
-
-    public String getHeader(Message message, String name) {
-        return getHeadersMap(message).getOrDefault(name, "");
+        return gmail.users().messages().send("me", message).execute();
     }
 
     public Map<String, String> getHeadersMap(Message message) {
@@ -83,6 +79,11 @@ public class GmailAdapter {
                         (existing, replacement) -> existing,
                         () -> new TreeMap<>(String.CASE_INSENSITIVE_ORDER)
                 ));
+    }
+
+    // Restored convenience method to satisfy tests
+    public String getHeader(Message message, String name) {
+        return getHeadersMap(message).getOrDefault(name, "");
     }
 
     public String getBody(Message message) {

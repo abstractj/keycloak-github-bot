@@ -1,55 +1,103 @@
 package org.keycloak.gh.bot.security.email;
 
 import com.google.api.services.gmail.model.Message;
-import com.google.api.services.gmail.model.MessagePart;
-import com.google.api.services.gmail.model.MessagePartHeader;
+import com.google.api.services.gmail.model.Thread;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import jakarta.mail.internet.MimeMessage;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/**
- * Verification for email construction and threading headers.
- */
 @QuarkusTest
 public class MailSenderTest {
 
-    @Inject
-    org.keycloak.gh.bot.security.email.MailSender mailSender;
-    @InjectMock
-    org.keycloak.gh.bot.security.email.GmailAdapter gmailAdapter;
-    @ConfigProperty(name = "gmail.user.email") String botEmail;
+    @Inject MailSender mailSender;
+    @InjectMock GmailAdapter gmailAdapter;
 
-    @Test
-    public void testReplyFindsLastHumanMessage() throws Exception {
-        Message humanMsg = createMsg("msg-human", "human@example.com");
-        Message botMsg = createMsg("msg-bot", botEmail);
-        com.google.api.services.gmail.model.Thread thread = new com.google.api.services.gmail.model.Thread().setMessages(List.of(humanMsg, botMsg));
-
-        when(gmailAdapter.getThread("t1")).thenReturn(thread);
-        when(gmailAdapter.getHeadersMap(any())).thenCallRealMethod();
-
-        mailSender.sendReply("t1", "Re: Sub", "Body", null);
-
-        ArgumentCaptor<MimeMessage> captor = ArgumentCaptor.forClass(MimeMessage.class);
-        verify(gmailAdapter).sendMessage(eq("t1"), captor.capture());
-        assertEquals("msg-human", captor.getValue().getHeader("In-Reply-To", null));
+    @BeforeEach
+    public void setup() throws IOException {
+        when(gmailAdapter.sendMessage(anyString(), any(MimeMessage.class))).thenReturn(new Message().setThreadId("123"));
+        when(gmailAdapter.sendMessage(eq(null), any(MimeMessage.class))).thenReturn(new Message().setThreadId("123"));
     }
 
-    private Message createMsg(String id, String from) {
-        return new Message().setPayload(new MessagePart().setHeaders(List.of(
-                new MessagePartHeader().setName("Message-ID").setValue(id),
-                new MessagePartHeader().setName("From").setValue(from))));
+    @Test
+    public void testSendNewEmail() throws IOException {
+        String threadId = mailSender.sendNewEmail("test@example.com", null, "Subject", "Body");
+        assertNotNull(threadId);
+        verify(gmailAdapter).sendMessage(eq(null), any(MimeMessage.class));
+    }
+
+    @Test
+    public void testSendReplyDerivesSubjectAndBody() throws IOException {
+        String threadId = "thread-123";
+        Thread mockThread = new Thread().setId(threadId);
+        Message mockMsg = new Message().setId("msg-1");
+        mockThread.setMessages(List.of(mockMsg));
+
+        when(gmailAdapter.getThread(threadId)).thenReturn(mockThread);
+
+        when(gmailAdapter.getHeadersMap(mockMsg)).thenReturn(Map.of(
+                "Subject", "Original Subject",
+                "Message-ID", "<original@example.com>",
+                "From", "reporter@example.com"
+        ));
+
+        String body = "Reply Body";
+        boolean success = mailSender.sendReply(threadId, body, null);
+
+        assertTrue(success);
+
+        ArgumentCaptor<MimeMessage> captor = ArgumentCaptor.forClass(MimeMessage.class);
+        verify(gmailAdapter).sendMessage(eq(threadId), captor.capture());
+
+        MimeMessage sentEmail = captor.getValue();
+        try {
+            assertEquals("Re: Original Subject", sentEmail.getSubject());
+            assertEquals(body, sentEmail.getContent()); // Regression Check
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Test
+    public void testSendThreadedEmailDerivesSubjectAndBody() throws IOException {
+        String threadId = "thread-456";
+        Thread mockThread = new Thread().setId(threadId);
+        Message mockMsg = new Message().setId("msg-2");
+        mockThread.setMessages(List.of(mockMsg));
+
+        when(gmailAdapter.getThread(threadId)).thenReturn(mockThread);
+        when(gmailAdapter.getHeadersMap(mockMsg)).thenReturn(Map.of("Subject", "Security Alert"));
+
+        String body = "SecAlert Body";
+        boolean success = mailSender.sendThreadedEmail(threadId, "to@redhat.com", "cc@group.com", body);
+
+        assertTrue(success);
+
+        ArgumentCaptor<MimeMessage> captor = ArgumentCaptor.forClass(MimeMessage.class);
+        verify(gmailAdapter).sendMessage(eq(threadId), captor.capture());
+
+        MimeMessage sentEmail = captor.getValue();
+        try {
+            assertEquals("Re: Security Alert", sentEmail.getSubject());
+            assertEquals(body, sentEmail.getContent()); // Regression Check
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 }

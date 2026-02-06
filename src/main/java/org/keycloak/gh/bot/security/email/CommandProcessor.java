@@ -29,9 +29,10 @@ import java.util.regex.Pattern;
 public class CommandProcessor {
 
     private static final Logger LOG = Logger.getLogger(CommandProcessor.class);
-    private static final Pattern VISIBLE_MARKER_PATTERN = Pattern.compile(Pattern.quote(Constants.GMAIL_THREAD_ID_PREFIX) + "\\s*([a-f0-9]+)");
-    private static final Pattern RAW_HEX_PATTERN = Pattern.compile("\\b([a-f0-9]{16})\\b");
-    private static final int MAX_PROCESSED_HISTORY = 10000;
+
+    // Markers for finding thread IDs
+    private static final Pattern REPORTER_THREAD_ID_PATTERN = Pattern.compile(Pattern.quote(Constants.GMAIL_THREAD_ID_PREFIX) + "\\s*([a-f0-9]+)");
+    private static final Pattern SECALERT_THREAD_ID_PATTERN = Pattern.compile(Pattern.quote(Constants.SECALERT_THREAD_ID_PREFIX) + "\\s*([a-f0-9]+)");
 
     @ConfigProperty(name = "google.group.target") String targetGroup;
     @ConfigProperty(name = "email.target.secalert") String secAlertEmail;
@@ -41,8 +42,8 @@ public class CommandProcessor {
     @Inject MailSender mailSender;
 
     private final Set<Long> processedComments = Collections.synchronizedSet(Collections.newSetFromMap(
-            new LinkedHashMap<Long, Boolean>(MAX_PROCESSED_HISTORY + 1, .75F, true) {
-                @Override protected boolean removeEldestEntry(Map.Entry<Long, Boolean> eldest) { return size() > MAX_PROCESSED_HISTORY; }
+            new LinkedHashMap<Long, Boolean>(10000 + 1, .75F, true) {
+                @Override protected boolean removeEldestEntry(Map.Entry<Long, Boolean> eldest) { return size() > 10000; }
             }));
 
     private Instant lastPollTime = Instant.now().minus(10, ChronoUnit.MINUTES);
@@ -64,9 +65,11 @@ public class CommandProcessor {
 
     private void scanIssue(GHIssue issue) {
         try {
-            // Optimization: Paginate or limit if issues have massive comment threads
             List<GHIssueComment> allComments = issue.queryComments().list().toList();
-            Optional<String> threadIdOpt = findThreadId(allComments);
+
+            Optional<String> reporterThreadId = findThreadId(allComments, REPORTER_THREAD_ID_PATTERN);
+            Optional<String> secAlertThreadId = findThreadId(allComments, SECALERT_THREAD_ID_PATTERN);
+
             Instant threshold = lastPollTime.minus(1, ChronoUnit.MINUTES);
 
             for (GHIssueComment comment : allComments) {
@@ -76,7 +79,7 @@ public class CommandProcessor {
                 parser.parse(comment.getBody()).ifPresent(cmd -> {
                     try {
                         if (hasAlreadyProcessed(comment)) return;
-                        executeCommand(issue, comment, cmd, threadIdOpt);
+                        executeCommand(issue, comment, cmd, reporterThreadId, secAlertThreadId);
                     } catch (IOException e) {
                         LOG.errorf(e, "Error on comment %d", comment.getId());
                     }
@@ -87,40 +90,48 @@ public class CommandProcessor {
         }
     }
 
-    private Optional<String> findThreadId(List<GHIssueComment> comments) {
+    private Optional<String> findThreadId(List<GHIssueComment> comments, Pattern pattern) {
         for (GHIssueComment comment : comments) {
-            String body = comment.getBody();
-            if (body == null) continue;
-            Matcher m = VISIBLE_MARKER_PATTERN.matcher(body);
-            if (m.find()) return Optional.of(m.group(1).trim());
-            Matcher raw = RAW_HEX_PATTERN.matcher(body);
-            if (raw.find()) return Optional.of(raw.group(1).trim());
+            Matcher m = pattern.matcher(comment.getBody());
+            if (m.find()) return Optional.of(m.group(1));
         }
         return Optional.empty();
     }
 
-    private void executeCommand(GHIssue issue, GHIssueComment comment, CommandParser.Command cmd, Optional<String> threadId) throws IOException {
+    private void executeCommand(GHIssue issue, GHIssueComment comment, CommandParser.Command cmd, Optional<String> reporterThreadId, Optional<String> secAlertThreadId) throws IOException {
         boolean success = false;
         ReactionContent reaction = ReactionContent.EYES;
 
         switch (cmd.type()) {
             case NEW_SECALERT -> {
                 String rawSubject = cmd.subject().orElse("No Subject");
+                String generatedThreadId = mailSender.sendNewEmail(secAlertEmail, targetGroup, rawSubject, cmd.body());
 
-                // Requirement 1: Email Subject remains exactly as provided
-                success = mailSender.sendNewEmail(secAlertEmail, targetGroup, rawSubject, cmd.body());
-
-                // Requirement 2: GitHub Issue Title gets the CVE-TBD prefix
+                success = generatedThreadId != null;
                 if (success) {
+                    String marker = Constants.SECALERT_THREAD_ID_PREFIX + " " + generatedThreadId;
+                    github.commentOnIssue(issue, "✅ SecAlert email sent. " + marker);
+
                     String prefixedTitle = Constants.CVE_TBD_PREFIX + " " + rawSubject;
                     github.updateTitleAndLabels(issue, prefixedTitle, null);
                 }
             }
             case REPLY_KEYCLOAK_SECURITY -> {
-                if (threadId.isPresent()) {
-                    success = mailSender.sendReply(threadId.get(), issue.getTitle(), cmd.body(), targetGroup);
+                if (reporterThreadId.isPresent()) {
+                    // Fix: No longer passing issue title. MailSender fetches subject from thread.
+                    success = mailSender.sendReply(reporterThreadId.get(), cmd.body(), targetGroup);
                 } else {
-                    replyWithError(issue, comment, "❌ Error: Gmail Thread ID not found in this issue.");
+                    replyWithError(issue, comment, "❌ Error: Reporter Thread ID not found (cannot reply to keycloak-security).");
+                    success = true;
+                    reaction = ReactionContent.CONFUSED;
+                }
+            }
+            case REPLY_SECALERT -> {
+                if (secAlertThreadId.isPresent()) {
+                    // Fix: No longer passing issue title.
+                    success = mailSender.sendThreadedEmail(secAlertThreadId.get(), secAlertEmail, targetGroup, cmd.body());
+                } else {
+                    replyWithError(issue, comment, "❌ Error: SecAlert Thread ID not found. Did you start a thread with /new secalert?");
                     success = true;
                     reaction = ReactionContent.CONFUSED;
                 }
