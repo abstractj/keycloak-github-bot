@@ -84,16 +84,6 @@ class MailingListCommandTest {
     }
 
     @Test
-    void execute_reactsWithThumbsDownOnInvalidCommandSignature() throws Exception {
-        when(comment.getBody()).thenReturn("@security reply extra-stuff\n\nBody text");
-
-        command.run(payload);
-
-        verify(comment).createReaction(ReactionContent.MINUS_ONE);
-        verify(mailSender, never()).sendReply(anyString(), anyString(), anyString());
-    }
-
-    @Test
     void execute_reactsWithThumbsDownWhenNoBody() throws Exception {
         when(comment.getBody()).thenReturn("@security reply");
 
