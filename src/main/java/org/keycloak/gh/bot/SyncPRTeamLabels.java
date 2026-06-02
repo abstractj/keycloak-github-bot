@@ -48,6 +48,9 @@ public class SyncPRTeamLabels {
 
             if (!linkedIssues.isEmpty()) {
                 logger.infof("Team label %s added to PR %s: Updating issues %s", newLabel, pullRequest.getNumber(), linkedIssueNumbers);
+                for (GHIssue issue : linkedIssues) {
+                    issue.addLabels(newLabel);
+                }
             } else {
                 logger.infof("Team label %s added to PR %s: No linked issues found", newLabel, pullRequest.getNumber());
             }

@@ -31,11 +31,13 @@ public class CommitUtils {
         for (String commitMessage : commitMessages) {
             Integer issuerNumber = getIssuerNumber(commitMessage);
             if (issuerNumber != null) {
-                try {
-                    GHIssue issue = repository.getIssue(issuerNumber);
-                    ghIssues.add(issue);
-                } catch (IOException e) {
-                    // Ignore not found issue number
+                if (ghIssues.stream().noneMatch(i -> i.getNumber() == issuerNumber)) {
+                    try {
+                        GHIssue issue = repository.getIssue(issuerNumber);
+                        ghIssues.add(issue);
+                    } catch (IOException e) {
+                        // Ignore not found issue number
+                    }
                 }
             }
         }
