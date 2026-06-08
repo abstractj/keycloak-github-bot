@@ -84,14 +84,18 @@ public class SecAlertCommand extends CommandParser implements BotCommand {
         }
         issue.addLabels(Status.CVE_REQUEST.toLabel());
 
-        Optional<SecurityAdvisoryClient.AdvisoryResult> advisory =
-                securityAdvisoryClient.createDraftAdvisory(subject, issue.getNumber(),
-                        payload.getRepository().getFullName());
-
         String title = issue.getTitle();
-        String prefix = advisory.map(a -> "[" + a.ghsaId() + "]").orElse(Constants.CVE_TBD_PREFIX);
-        if (title != null && !title.startsWith(Constants.CVE_TBD_PREFIX) && !Constants.GHSA_PATTERN.matcher(title).find()) {
-            issue.setTitle(prefix + " " + title);
+        if (title != null && Constants.GHSA_PATTERN.matcher(title).find()) {
+            LOGGER.infof("Issue #%d already has a GHSA prefix, skipping advisory creation", issue.getNumber());
+        } else {
+            Optional<SecurityAdvisoryClient.AdvisoryResult> advisory =
+                    securityAdvisoryClient.createDraftAdvisory(subject, issue.getNumber(),
+                            payload.getRepository().getFullName());
+
+            String prefix = advisory.map(a -> "[" + a.ghsaId() + "]").orElse(Constants.CVE_TBD_PREFIX);
+            if (title != null && !title.startsWith(Constants.CVE_TBD_PREFIX)) {
+                issue.setTitle(prefix + " " + title);
+            }
         }
         success(payload);
     }

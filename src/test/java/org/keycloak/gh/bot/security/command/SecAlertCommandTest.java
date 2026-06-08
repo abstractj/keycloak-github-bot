@@ -113,7 +113,7 @@ class SecAlertCommandTest {
     }
 
     @Test
-    void newThread_doesNotDoublePrefixTitleWithGhsa() throws Exception {
+    void newThread_skipsAdvisoryCreationWhenGhsaPrefixExists() throws Exception {
         when(comment.getBody()).thenReturn("@security secalert CVE-2026-9999\n\nRetry after transient failure.");
         setupSubject("CVE-2026-9999");
         setupIssueComments();
@@ -125,6 +125,7 @@ class SecAlertCommandTest {
         command.run(payload);
 
         verify(mailSender).sendNewEmail(anyString(), anyString(), anyString(), anyString());
+        verify(securityAdvisoryClient, never()).createDraftAdvisory(anyString(), anyInt(), anyString());
         verify(issue, never()).setTitle(anyString());
         verify(comment).createReaction(ReactionContent.PLUS_ONE);
     }
