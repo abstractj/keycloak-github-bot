@@ -16,6 +16,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -48,20 +50,12 @@ public class SecurityAdvisoryClient {
         httpClient = HttpClient.newHttpClient();
     }
 
-    public Optional<AdvisoryResult> createDraftAdvisory(String summary, int issueNumber, String sourceRepository) {
+    public Optional<AdvisoryResult> createDraftAdvisory(String summary, int issueNumber,
+            String sourceRepository, VulnerabilityReport report) {
         try {
             String token = resolveInstallationToken();
 
-            Map<String, Object> payload = Map.of(
-                    "summary", summary,
-                    "description", "Migrated from %s#%d".formatted(sourceRepository, issueNumber),
-                    "vulnerabilities", List.of(Map.of(
-                            "package", Map.of(
-                                    "ecosystem", ECOSYSTEM,
-                                    "name", PACKAGE_NAME
-                            )
-                    ))
-            );
+            Map<String, Object> payload = buildPayload(summary, issueNumber, sourceRepository, report);
 
             String body = MAPPER.writeValueAsString(payload);
             String url = "%s/repos/%s/security-advisories".formatted(GITHUB_API_BASE, mainRepository);
@@ -96,6 +90,37 @@ public class SecurityAdvisoryClient {
             LOGGER.errorf(e, "Failed to create security advisory for issue #%d", issueNumber);
             return Optional.empty();
         }
+    }
+
+    private Map<String, Object> buildPayload(String summary, int issueNumber,
+            String sourceRepository, VulnerabilityReport report) {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("summary", summary);
+
+        String description = report != null && report.summary() != null
+                ? report.summary()
+                : "Migrated from %s#%d".formatted(sourceRepository, issueNumber);
+        payload.put("description", description);
+
+        Map<String, Object> pkg = new LinkedHashMap<>();
+        pkg.put("ecosystem", ECOSYSTEM);
+        pkg.put("name", report != null && report.packageName() != null ? report.packageName() : PACKAGE_NAME);
+
+        Map<String, Object> vulnerability = new HashMap<>(Map.of("package", pkg));
+        if (report != null && report.vulnerableVersionRange() != null) {
+            vulnerability.put("vulnerable_version_range", report.vulnerableVersionRange());
+        }
+        payload.put("vulnerabilities", List.of(vulnerability));
+
+        if (report != null && report.cvssVector() != null) {
+            payload.put("cvss_vector_string", report.cvssVector());
+        }
+
+        if (report != null && report.cweIds() != null && !report.cweIds().isEmpty()) {
+            payload.put("cwe_ids", report.cweIds());
+        }
+
+        return payload;
     }
 
     private String resolveInstallationToken() throws IOException {

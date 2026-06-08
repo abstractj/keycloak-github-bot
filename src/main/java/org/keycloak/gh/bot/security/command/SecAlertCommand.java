@@ -6,6 +6,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 import org.keycloak.gh.bot.labels.Status;
 import org.keycloak.gh.bot.security.advisory.SecurityAdvisoryClient;
+import org.keycloak.gh.bot.security.advisory.VulnerabilityReport;
+import org.keycloak.gh.bot.security.advisory.VulnerabilityReportParser;
 import org.keycloak.gh.bot.security.common.Constants;
 import org.keycloak.gh.bot.security.email.MailSender;
 import org.kohsuke.github.GHEventPayload;
@@ -88,9 +90,10 @@ public class SecAlertCommand extends CommandParser implements BotCommand {
         if (title != null && Constants.GHSA_PATTERN.matcher(title).find()) {
             LOGGER.infof("Issue #%d already has a GHSA prefix, skipping advisory creation", issue.getNumber());
         } else {
+            VulnerabilityReport report = VulnerabilityReportParser.parse(body);
             Optional<SecurityAdvisoryClient.AdvisoryResult> advisory =
                     securityAdvisoryClient.createDraftAdvisory(subject, issue.getNumber(),
-                            payload.getRepository().getFullName());
+                            payload.getRepository().getFullName(), report);
 
             String prefix = advisory.map(a -> "[" + a.ghsaId() + "]").orElse(Constants.CVE_TBD_PREFIX);
             if (title != null && !title.startsWith(Constants.CVE_TBD_PREFIX)) {

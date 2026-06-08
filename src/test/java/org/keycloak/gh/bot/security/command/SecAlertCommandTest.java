@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.keycloak.gh.bot.labels.Status;
 import org.keycloak.gh.bot.security.advisory.SecurityAdvisoryClient;
+import org.keycloak.gh.bot.security.advisory.VulnerabilityReport;
 import org.keycloak.gh.bot.security.common.Constants;
 import org.keycloak.gh.bot.security.email.MailSender;
 import org.kohsuke.github.GHEventPayload;
@@ -49,7 +50,7 @@ class SecAlertCommandTest {
         setField(command, "secAlertReplyTo", "secalert@redhat.atlassian.net");
         setField(command, "targetGroup", "keycloak-security@googlegroups.com");
 
-        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString()))
+        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString(), any(VulnerabilityReport.class)))
                 .thenReturn(Optional.empty());
 
         payload = mock(GHEventPayload.IssueComment.class);
@@ -78,7 +79,7 @@ class SecAlertCommandTest {
                 "CVE-2026-1234 XSS in admin console - #GHI-42", "Please triage this vulnerability."))
                 .thenReturn(Optional.of("19c48d1ecb33de98"));
         when(securityAdvisoryClient.createDraftAdvisory(
-                "CVE-2026-1234 XSS in admin console", 42, "keycloak-poc/keycloak-private"))
+                eq("CVE-2026-1234 XSS in admin console"), eq(42), eq("keycloak-poc/keycloak-private"), any(VulnerabilityReport.class)))
                 .thenReturn(Optional.of(new SecurityAdvisoryClient.AdvisoryResult("GHSA-abcd-efgh-ijkl",
                         "https://github.com/keycloak-poc/keycloak/security/advisories/GHSA-abcd-efgh-ijkl")));
 
@@ -87,7 +88,7 @@ class SecAlertCommandTest {
         verify(mailSender).sendNewEmail("secalert@redhat.com", "keycloak-security@googlegroups.com",
                 "CVE-2026-1234 XSS in admin console - #GHI-42", "Please triage this vulnerability.");
         verify(securityAdvisoryClient).createDraftAdvisory(
-                "CVE-2026-1234 XSS in admin console", 42, "keycloak-poc/keycloak-private");
+                eq("CVE-2026-1234 XSS in admin console"), eq(42), eq("keycloak-poc/keycloak-private"), any(VulnerabilityReport.class));
         verify(issue, never()).comment(anyString());
         verify(issue).removeLabels(Status.TRIAGE.toLabel());
         verify(issue).addLabels(Status.CVE_REQUEST.toLabel());
@@ -125,7 +126,7 @@ class SecAlertCommandTest {
         command.run(payload);
 
         verify(mailSender).sendNewEmail(anyString(), anyString(), anyString(), anyString());
-        verify(securityAdvisoryClient, never()).createDraftAdvisory(anyString(), anyInt(), anyString());
+        verify(securityAdvisoryClient, never()).createDraftAdvisory(anyString(), anyInt(), anyString(), any());
         verify(issue, never()).setTitle(anyString());
         verify(comment).createReaction(ReactionContent.PLUS_ONE);
     }
@@ -139,7 +140,7 @@ class SecAlertCommandTest {
         when(issue.getTitle()).thenReturn("Some issue title");
         when(mailSender.sendNewEmail(anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(Optional.of("aabbccdd"));
-        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString()))
+        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString(), any(VulnerabilityReport.class)))
                 .thenReturn(Optional.empty());
 
         command.run(payload);
@@ -157,7 +158,7 @@ class SecAlertCommandTest {
         setupIssueComments();
         setupIssueLabels(Status.TRIAGE.toLabel());
         when(issue.getTitle()).thenReturn("Some title");
-        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString()))
+        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString(), any(VulnerabilityReport.class)))
                 .thenReturn(Optional.empty());
 
         CountDownLatch emailBlocked = new CountDownLatch(1);
@@ -225,7 +226,7 @@ class SecAlertCommandTest {
         when(issue.getTitle()).thenReturn("Some issue title");
         when(mailSender.sendNewEmail(anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(Optional.of("aabbccdd"));
-        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString()))
+        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString(), any(VulnerabilityReport.class)))
                 .thenReturn(Optional.empty());
 
         command.run(payload);
@@ -249,7 +250,7 @@ class SecAlertCommandTest {
         verify(mailSender).sendThreadedEmail("abc123def456", "secalert@redhat.atlassian.net",
                 "keycloak-security@googlegroups.com", "This is a follow-up reply.");
         verify(mailSender, never()).sendNewEmail(anyString(), anyString(), anyString(), anyString());
-        verify(securityAdvisoryClient, never()).createDraftAdvisory(anyString(), anyInt(), anyString());
+        verify(securityAdvisoryClient, never()).createDraftAdvisory(anyString(), anyInt(), anyString(), any());
         verify(issue, never()).removeLabels(any(String[].class));
         verify(issue, never()).addLabels(any(String[].class));
         verify(comment).createReaction(ReactionContent.PLUS_ONE);

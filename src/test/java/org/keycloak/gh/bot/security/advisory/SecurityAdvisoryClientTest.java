@@ -13,6 +13,7 @@ import java.lang.reflect.Field;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -51,7 +52,7 @@ class SecurityAdvisoryClientTest {
                 """);
 
         Optional<SecurityAdvisoryClient.AdvisoryResult> result =
-                client.createDraftAdvisory("XSS in admin console", 42, "keycloak-poc/keycloak-private");
+                client.createDraftAdvisory("XSS in admin console", 42, "keycloak-poc/keycloak-private", emptyReport());
 
         assertTrue(result.isPresent());
         assertEquals("GHSA-abcd-efgh-ijkl", result.get().ghsaId());
@@ -64,7 +65,7 @@ class SecurityAdvisoryClientTest {
                 {"ghsa_id": "GHSA-1234-5678-abcd", "html_url": "https://example.com"}
                 """);
 
-        client.createDraftAdvisory("Test", 1, "keycloak-poc/keycloak-private");
+        client.createDraftAdvisory("Test", 1, "keycloak-poc/keycloak-private", emptyReport());
 
         var captor = org.mockito.ArgumentCaptor.forClass(HttpRequest.class);
         verify(httpClient).send(captor.capture(), any());
@@ -80,7 +81,7 @@ class SecurityAdvisoryClientTest {
                 {"ghsa_id": "GHSA-1234-5678-abcd", "html_url": "https://example.com"}
                 """);
 
-        client.createDraftAdvisory("Test", 1, "keycloak-poc/keycloak-private");
+        client.createDraftAdvisory("Test", 1, "keycloak-poc/keycloak-private", emptyReport());
 
         var captor = org.mockito.ArgumentCaptor.forClass(HttpRequest.class);
         verify(httpClient).send(captor.capture(), any());
@@ -91,13 +92,65 @@ class SecurityAdvisoryClientTest {
     }
 
     @Test
+    void createDraftAdvisory_includesStructuredFieldsInPayload() throws Exception {
+        mockHttpResponse(201, """
+                {"ghsa_id": "GHSA-abcd-efgh-ijkl", "html_url": "https://example.com"}
+                """);
+
+        VulnerabilityReport report = new VulnerabilityReport(
+                "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:H/A:N",
+                List.of("CWE-863", "CWE-285"),
+                "org.keycloak:keycloak-rest-admin-ui-ext",
+                ">= 26.0.0, < 26.6.3",
+                List.of(),
+                "The admin-ui-ext endpoints skip per-role authorization.",
+                "raw body"
+        );
+
+        Optional<SecurityAdvisoryClient.AdvisoryResult> result =
+                client.createDraftAdvisory("Auth bypass", 42, "keycloak-poc/keycloak-private", report);
+
+        assertTrue(result.isPresent());
+        assertEquals("GHSA-abcd-efgh-ijkl", result.get().ghsaId());
+        verify(httpClient).send(any(HttpRequest.class), any());
+    }
+
+    @Test
+    void createDraftAdvisory_usesReportSummaryAsDescription() throws Exception {
+        mockHttpResponse(201, """
+                {"ghsa_id": "GHSA-1234-5678-abcd", "html_url": "https://example.com"}
+                """);
+
+        VulnerabilityReport report = new VulnerabilityReport(
+                null, List.of(), null, null, List.of(),
+                "Custom summary from report section.",
+                "raw body"
+        );
+
+        client.createDraftAdvisory("Test", 1, "keycloak-poc/keycloak-private", report);
+
+        verify(httpClient).send(any(HttpRequest.class), any());
+    }
+
+    @Test
+    void createDraftAdvisory_fallsBackToMigrationMarkerWhenNoSummary() throws Exception {
+        mockHttpResponse(201, """
+                {"ghsa_id": "GHSA-1234-5678-abcd", "html_url": "https://example.com"}
+                """);
+
+        client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private", emptyReport());
+
+        verify(httpClient).send(any(HttpRequest.class), any());
+    }
+
+    @Test
     void createDraftAdvisory_returnsEmptyOnHttpError() throws Exception {
         mockHttpResponse(422, """
                 {"message": "Validation Failed"}
                 """);
 
         Optional<SecurityAdvisoryClient.AdvisoryResult> result =
-                client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private");
+                client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private", emptyReport());
 
         assertTrue(result.isEmpty());
     }
@@ -109,7 +162,7 @@ class SecurityAdvisoryClientTest {
                 """);
 
         Optional<SecurityAdvisoryClient.AdvisoryResult> result =
-                client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private");
+                client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private", emptyReport());
 
         assertTrue(result.isEmpty());
     }
@@ -119,7 +172,7 @@ class SecurityAdvisoryClientTest {
         when(httpClient.send(any(), any())).thenThrow(new IOException("Connection refused"));
 
         Optional<SecurityAdvisoryClient.AdvisoryResult> result =
-                client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private");
+                client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private", emptyReport());
 
         assertTrue(result.isEmpty());
     }
@@ -131,7 +184,7 @@ class SecurityAdvisoryClientTest {
                 """);
 
         Optional<SecurityAdvisoryClient.AdvisoryResult> result =
-                client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private");
+                client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private", emptyReport());
 
         assertTrue(result.isEmpty());
     }
@@ -141,7 +194,7 @@ class SecurityAdvisoryClientTest {
         mockHttpResponse(201, "not-json");
 
         Optional<SecurityAdvisoryClient.AdvisoryResult> result =
-                client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private");
+                client.createDraftAdvisory("Test", 42, "keycloak-poc/keycloak-private", emptyReport());
 
         assertTrue(result.isEmpty());
     }
@@ -174,6 +227,10 @@ class SecurityAdvisoryClientTest {
         idField.setAccessible(true);
         idField.setLong(installation, id);
         return installation;
+    }
+
+    private static VulnerabilityReport emptyReport() {
+        return new VulnerabilityReport(null, List.of(), null, null, List.of(), null, "body");
     }
 
     private static void setField(Object target, String fieldName, Object value) throws Exception {
