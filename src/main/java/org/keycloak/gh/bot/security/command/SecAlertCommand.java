@@ -5,6 +5,7 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 import org.keycloak.gh.bot.labels.Status;
+import org.keycloak.gh.bot.security.advisory.SecurityAdvisoryClient;
 import org.keycloak.gh.bot.security.common.Constants;
 import org.keycloak.gh.bot.security.email.MailSender;
 import org.kohsuke.github.GHEventPayload;
@@ -30,6 +31,9 @@ public class SecAlertCommand extends CommandParser implements BotCommand {
 
     @Inject
     MailSender mailSender;
+
+    @Inject
+    SecurityAdvisoryClient securityAdvisoryClient;
 
     @ConfigProperty(name = "secalert.email.to")
     String secAlertTo;
@@ -80,9 +84,14 @@ public class SecAlertCommand extends CommandParser implements BotCommand {
         }
         issue.addLabels(Status.CVE_REQUEST.toLabel());
 
+        Optional<SecurityAdvisoryClient.AdvisoryResult> advisory =
+                securityAdvisoryClient.createDraftAdvisory(subject, issue.getNumber(),
+                        payload.getRepository().getFullName());
+
         String title = issue.getTitle();
-        if (title != null && !title.startsWith(Constants.CVE_TBD_PREFIX)) {
-            issue.setTitle(Constants.CVE_TBD_PREFIX + " " + title);
+        String prefix = advisory.map(a -> "[" + a.ghsaId() + "]").orElse(Constants.CVE_TBD_PREFIX);
+        if (title != null && !title.startsWith(Constants.CVE_TBD_PREFIX) && !Constants.GHSA_PATTERN.matcher(title).find()) {
+            issue.setTitle(prefix + " " + title);
         }
         success(payload);
     }

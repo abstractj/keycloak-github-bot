@@ -3,6 +3,7 @@ package org.keycloak.gh.bot.security.command;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.keycloak.gh.bot.labels.Status;
+import org.keycloak.gh.bot.security.advisory.SecurityAdvisoryClient;
 import org.keycloak.gh.bot.security.common.Constants;
 import org.keycloak.gh.bot.security.email.MailSender;
 import org.kohsuke.github.GHEventPayload;
@@ -30,6 +31,7 @@ import static org.mockito.Mockito.*;
 class SecAlertCommandTest {
 
     private MailSender mailSender;
+    private SecurityAdvisoryClient securityAdvisoryClient;
     private SecAlertCommand command;
     private GHEventPayload.IssueComment payload;
     private GHIssueComment comment;
@@ -38,19 +40,24 @@ class SecAlertCommandTest {
     @BeforeEach
     void setUp() throws Exception {
         mailSender = mock(MailSender.class);
+        securityAdvisoryClient = mock(SecurityAdvisoryClient.class);
         command = new SecAlertCommand();
 
         setField(command, "mailSender", mailSender);
+        setField(command, "securityAdvisoryClient", securityAdvisoryClient);
         setField(command, "secAlertTo", "secalert@redhat.com");
         setField(command, "secAlertReplyTo", "secalert@redhat.atlassian.net");
         setField(command, "targetGroup", "keycloak-security@googlegroups.com");
+
+        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString()))
+                .thenReturn(Optional.empty());
 
         payload = mock(GHEventPayload.IssueComment.class);
         comment = mock(GHIssueComment.class);
         issue = mock(GHIssue.class);
 
         GHRepository repository = mock(GHRepository.class);
-        when(repository.getFullName()).thenReturn("keycloak/keycloak-private");
+        when(repository.getFullName()).thenReturn("keycloak-poc/keycloak-private");
         when(payload.getRepository()).thenReturn(repository);
         when(payload.getComment()).thenReturn(comment);
         when(comment.getNodeId()).thenReturn("IC_abc123");
@@ -61,7 +68,7 @@ class SecAlertCommandTest {
     // --- New thread (no existing SecAlert-Thread-ID) ---
 
     @Test
-    void newThread_sendsEmailWithGhiTaggedSubject() throws Exception {
+    void newThread_sendsEmailAndCreatesAdvisoryWithGhsaPrefix() throws Exception {
         when(comment.getBody()).thenReturn("@security secalert CVE-2026-1234 XSS in admin console\n\nPlease triage this vulnerability.");
         setupSubject("CVE-2026-1234", "XSS", "in", "admin", "console");
         setupIssueComments("Some unrelated comment");
@@ -70,15 +77,21 @@ class SecAlertCommandTest {
         when(mailSender.sendNewEmail("secalert@redhat.com", "keycloak-security@googlegroups.com",
                 "CVE-2026-1234 XSS in admin console - #GHI-42", "Please triage this vulnerability."))
                 .thenReturn(Optional.of("19c48d1ecb33de98"));
+        when(securityAdvisoryClient.createDraftAdvisory(
+                "CVE-2026-1234 XSS in admin console", 42, "keycloak-poc/keycloak-private"))
+                .thenReturn(Optional.of(new SecurityAdvisoryClient.AdvisoryResult("GHSA-abcd-efgh-ijkl",
+                        "https://github.com/keycloak-poc/keycloak/security/advisories/GHSA-abcd-efgh-ijkl")));
 
         command.run(payload);
 
         verify(mailSender).sendNewEmail("secalert@redhat.com", "keycloak-security@googlegroups.com",
                 "CVE-2026-1234 XSS in admin console - #GHI-42", "Please triage this vulnerability.");
+        verify(securityAdvisoryClient).createDraftAdvisory(
+                "CVE-2026-1234 XSS in admin console", 42, "keycloak-poc/keycloak-private");
         verify(issue, never()).comment(anyString());
         verify(issue).removeLabels(Status.TRIAGE.toLabel());
         verify(issue).addLabels(Status.CVE_REQUEST.toLabel());
-        verify(issue).setTitle("[CVE-TBD] Wildcard Redirect URI vulnerability");
+        verify(issue).setTitle("[GHSA-abcd-efgh-ijkl] Wildcard Redirect URI vulnerability");
         verify(comment).createReaction(ReactionContent.PLUS_ONE);
     }
 
@@ -90,10 +103,28 @@ class SecAlertCommandTest {
         setupIssueLabels(Status.TRIAGE.toLabel());
         when(issue.getTitle()).thenReturn("[CVE-TBD] Already prefixed title");
         when(mailSender.sendNewEmail(anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(Optional.of("retrythread"));
+                .thenReturn(Optional.of("threadid123"));
 
         command.run(payload);
 
+        verify(mailSender).sendNewEmail(anyString(), anyString(), anyString(), anyString());
+        verify(issue, never()).setTitle(anyString());
+        verify(comment).createReaction(ReactionContent.PLUS_ONE);
+    }
+
+    @Test
+    void newThread_doesNotDoublePrefixTitleWithGhsa() throws Exception {
+        when(comment.getBody()).thenReturn("@security secalert CVE-2026-9999\n\nRetry after transient failure.");
+        setupSubject("CVE-2026-9999");
+        setupIssueComments();
+        setupIssueLabels(Status.TRIAGE.toLabel());
+        when(issue.getTitle()).thenReturn("[GHSA-abcd-efgh-ijkl] Already prefixed title");
+        when(mailSender.sendNewEmail(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(Optional.of("threadid456"));
+
+        command.run(payload);
+
+        verify(mailSender).sendNewEmail(anyString(), anyString(), anyString(), anyString());
         verify(issue, never()).setTitle(anyString());
         verify(comment).createReaction(ReactionContent.PLUS_ONE);
     }
@@ -107,6 +138,8 @@ class SecAlertCommandTest {
         when(issue.getTitle()).thenReturn("Some issue title");
         when(mailSender.sendNewEmail(anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(Optional.of("aabbccdd"));
+        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString()))
+                .thenReturn(Optional.empty());
 
         command.run(payload);
 
@@ -123,6 +156,8 @@ class SecAlertCommandTest {
         setupIssueComments();
         setupIssueLabels(Status.TRIAGE.toLabel());
         when(issue.getTitle()).thenReturn("Some title");
+        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString()))
+                .thenReturn(Optional.empty());
 
         CountDownLatch emailBlocked = new CountDownLatch(1);
         CountDownLatch secondCallDone = new CountDownLatch(1);
@@ -136,6 +171,7 @@ class SecAlertCommandTest {
         SecAlertCommand secondCommand = new SecAlertCommand();
         secondCommand.unparsedArgs = new ArrayList<>(List.of("Race", "Condition"));
         setField(secondCommand, "mailSender", mailSender);
+        setField(secondCommand, "securityAdvisoryClient", securityAdvisoryClient);
         setField(secondCommand, "secAlertTo", "secalert@redhat.com");
         setField(secondCommand, "secAlertReplyTo", "secalert@redhat.atlassian.net");
         setField(secondCommand, "targetGroup", "keycloak-security@googlegroups.com");
@@ -179,6 +215,24 @@ class SecAlertCommandTest {
         verify(mailSender, never()).sendNewEmail(anyString(), anyString(), anyString(), anyString());
     }
 
+    @Test
+    void newThread_fallsBackToCveTbdWhenAdvisoryFails() throws Exception {
+        when(comment.getBody()).thenReturn("@security secalert CVE-2026-5678\n\nDetails here.");
+        setupSubject("CVE-2026-5678");
+        setupIssueComments();
+        setupIssueLabels(Status.TRIAGE.toLabel());
+        when(issue.getTitle()).thenReturn("Some issue title");
+        when(mailSender.sendNewEmail(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(Optional.of("aabbccdd"));
+        when(securityAdvisoryClient.createDraftAdvisory(anyString(), anyInt(), anyString()))
+                .thenReturn(Optional.empty());
+
+        command.run(payload);
+
+        verify(issue).setTitle("[CVE-TBD] Some issue title");
+        verify(comment).createReaction(ReactionContent.PLUS_ONE);
+    }
+
     // --- Reply on existing thread (SecAlert-Thread-ID found) ---
 
     @Test
@@ -194,6 +248,7 @@ class SecAlertCommandTest {
         verify(mailSender).sendThreadedEmail("abc123def456", "secalert@redhat.atlassian.net",
                 "keycloak-security@googlegroups.com", "This is a follow-up reply.");
         verify(mailSender, never()).sendNewEmail(anyString(), anyString(), anyString(), anyString());
+        verify(securityAdvisoryClient, never()).createDraftAdvisory(anyString(), anyInt(), anyString());
         verify(issue, never()).removeLabels(any(String[].class));
         verify(issue, never()).addLabels(any(String[].class));
         verify(comment).createReaction(ReactionContent.PLUS_ONE);

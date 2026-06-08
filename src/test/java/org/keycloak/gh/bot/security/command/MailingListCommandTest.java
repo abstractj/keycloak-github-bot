@@ -41,7 +41,7 @@ class MailingListCommandTest {
         issue = mock(GHIssue.class);
 
         GHRepository repository = mock(GHRepository.class);
-        when(repository.getFullName()).thenReturn("keycloak/keycloak-private");
+        when(repository.getFullName()).thenReturn("keycloak-poc/keycloak-private");
         when(payload.getRepository()).thenReturn(repository);
         when(payload.getComment()).thenReturn(comment);
         when(comment.getNodeId()).thenReturn("IC_abc123");
