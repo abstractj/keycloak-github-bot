@@ -16,6 +16,7 @@ import org.keycloak.gh.bot.utils.Labels;
 import org.kohsuke.github.GHIssue;
 import org.kohsuke.github.GHIssueComment;
 import org.kohsuke.github.GHIssueState;
+import org.kohsuke.github.GHIssueStateReason;
 import org.kohsuke.github.GHLabel;
 import org.kohsuke.github.GHRepository;
 import org.kohsuke.github.GitHub;
@@ -56,7 +57,13 @@ public class MailProcessor {
     GitHubInstallationProvider gitHubInstallationProvider;
 
     @Inject
-    EmailBodySanitizer bodySanitizer; // Extracted parsing logic dependency
+    AutoReplyMessages autoReplyMessages;
+
+    @Inject
+    MailSender mailSender;
+
+    @Inject
+    EmailBodySanitizer bodySanitizer;
 
     private TargetGroup targetGroup;
 
@@ -138,9 +145,7 @@ public class MailProcessor {
             if (issueOpt.isPresent()) {
                 var issue = issueOpt.get();
                 if (issue.getState() == GHIssueState.CLOSED) {
-                    issue.reopen();
-                    issue.addLabels(Labels.STATUS_TRIAGE, Labels.REOPENED_BY_BOT);
-                    LOGGER.infof("Reopened existing closed issue #%d for thread %s", issue.getNumber(), threadId);
+                    handleClosedIssue(issue, fromSecAlert, threadId);
                 }
                 appendComment(issue, from, body, attachmentSection);
 
@@ -239,6 +244,25 @@ public class MailProcessor {
         return Stream.of(from, replyTo)
                 .filter(Objects::nonNull)
                 .anyMatch(header -> header.toLowerCase().contains(needle));
+    }
+
+    private void handleClosedIssue(GHIssue issue, boolean fromSecAlert, String threadId) throws IOException {
+        if (shouldReopenClosedIssue(fromSecAlert, issue.getStateReason())) {
+            issue.reopen();
+            issue.addLabels(Labels.STATUS_TRIAGE, Labels.REOPENED_BY_BOT);
+            LOGGER.infof("Reopened existing closed issue #%d for thread %s", issue.getNumber(), threadId);
+            return;
+        }
+        String reply = autoReplyMessages.getMessage(AutoReplyType.ISSUE_RESOLVED);
+        issue.comment(reply);
+        mailSender.sendReply(threadId, reply, targetGroup.email());
+        LOGGER.infof("Issue #%d is completed — posted auto-reply and sent email for thread %s",
+                issue.getNumber(), threadId);
+    }
+
+    boolean shouldReopenClosedIssue(boolean fromSecAlert, GHIssueStateReason stateReason) {
+        if (fromSecAlert) return true;
+        return stateReason != GHIssueStateReason.COMPLETED;
     }
 
     private Optional<GHIssue> resolveIssueBySecAlertThreadId(GitHub github, GHRepository repository, String threadId) {

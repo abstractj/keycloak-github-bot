@@ -9,6 +9,7 @@ import org.keycloak.gh.bot.security.common.Constants;
 import org.kohsuke.github.GHIssue;
 import org.kohsuke.github.GHIssueComment;
 import org.kohsuke.github.GHIssueCommentQueryBuilder;
+import org.kohsuke.github.GHIssueStateReason;
 import org.kohsuke.github.GHLabel;
 import org.kohsuke.github.GHRepository;
 import org.kohsuke.github.PagedIterable;
@@ -20,6 +21,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -274,6 +276,32 @@ public class MailProcessorTest {
         processor.recordSecAlertThreadIdIfMissing(issue, "thirdthread");
 
         verify(issue.queryComments(), org.mockito.Mockito.times(1)).list();
+    }
+
+    // --- shouldReopenClosedIssue ---
+
+    @Test
+    void shouldReopenClosedIssue_returnsTrueForSecAlert() {
+        MailProcessor processor = new MailProcessor();
+        assertTrue(processor.shouldReopenClosedIssue(true, GHIssueStateReason.COMPLETED));
+    }
+
+    @Test
+    void shouldReopenClosedIssue_returnsFalseForCompleted() {
+        MailProcessor processor = new MailProcessor();
+        assertFalse(processor.shouldReopenClosedIssue(false, GHIssueStateReason.COMPLETED));
+    }
+
+    @Test
+    void shouldReopenClosedIssue_returnsTrueForNotPlanned() {
+        MailProcessor processor = new MailProcessor();
+        assertTrue(processor.shouldReopenClosedIssue(false, GHIssueStateReason.NOT_PLANNED));
+    }
+
+    @Test
+    void shouldReopenClosedIssue_returnsTrueForNull() {
+        MailProcessor processor = new MailProcessor();
+        assertTrue(processor.shouldReopenClosedIssue(false, null));
     }
 
     @SuppressWarnings("unchecked")
