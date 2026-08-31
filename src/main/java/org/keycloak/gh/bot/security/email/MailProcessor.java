@@ -36,6 +36,9 @@ public class MailProcessor {
     private static final Logger LOGGER = Logger.getLogger(MailProcessor.class);
     private static final Pattern BRACKET_PREFIX_PATTERN = Pattern.compile("^.*?\\[.*?]\\s*");
     private static final Pattern REPLY_PREFIX_PATTERN = Pattern.compile("^(?:\\s*(?:Re|Fwd|Fw)\\s*:\\s*)+", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PSIRT_CLOSURE_PATTERN = Pattern.compile(
+            "Your request\\s+[A-Z]+-\\d+.*this request is now closed",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
     @ConfigProperty(name = "google.group.target")
     String targetGroupEmail;
@@ -138,9 +141,7 @@ public class MailProcessor {
             if (issueOpt.isPresent()) {
                 var issue = issueOpt.get();
                 if (issue.getState() == GHIssueState.CLOSED) {
-                    issue.reopen();
-                    issue.addLabels(Labels.STATUS_TRIAGE, Labels.REOPENED_BY_BOT);
-                    LOGGER.infof("Reopened existing closed issue #%d for thread %s", issue.getNumber(), threadId);
+                    handleClosedIssue(issue, fromSecAlert, body, threadId);
                 }
                 appendComment(issue, from, body, attachmentSection);
 
@@ -239,6 +240,22 @@ public class MailProcessor {
         return Stream.of(from, replyTo)
                 .filter(Objects::nonNull)
                 .anyMatch(header -> header.toLowerCase().contains(needle));
+    }
+
+    private void handleClosedIssue(GHIssue issue, boolean fromSecAlert, String body, String threadId) throws IOException {
+        if (fromSecAlert && isPsirtClosureNotification(body)) {
+            LOGGER.infof("PSIRT closure notification for issue #%d — skipping reopen for thread %s",
+                    issue.getNumber(), threadId);
+            return;
+        }
+        issue.reopen();
+        issue.addLabels(Labels.STATUS_TRIAGE, Labels.REOPENED_BY_BOT);
+        LOGGER.infof("Reopened existing closed issue #%d for thread %s", issue.getNumber(), threadId);
+    }
+
+    static boolean isPsirtClosureNotification(String body) {
+        if (body == null || body.isBlank()) return false;
+        return PSIRT_CLOSURE_PATTERN.matcher(body).find();
     }
 
     private Optional<GHIssue> resolveIssueBySecAlertThreadId(GitHub github, GHRepository repository, String threadId) {

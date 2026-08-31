@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -274,6 +275,50 @@ public class MailProcessorTest {
         processor.recordSecAlertThreadIdIfMissing(issue, "thirdthread");
 
         verify(issue.queryComments(), org.mockito.Mockito.times(1)).list();
+    }
+
+    // --- isPsirtClosureNotification ---
+
+    @Test
+    void isPsirtClosureNotification_detectsRealClosureBody() {
+        String body = "Your request PSIRTSUPT-21634: Incomplete fix for CVE-2026-9083 - #GHI-992 has been resolved.\n\n"
+                + "This request is now closed. If you have a new security concern, please reach out.";
+        assertTrue(MailProcessor.isPsirtClosureNotification(body));
+    }
+
+    @Test
+    void isPsirtClosureNotification_detectsDifferentProjectKey() {
+        String body = "Your request SECVULN-1234: Some issue has been resolved.\n\n"
+                + "This request is now closed.";
+        assertTrue(MailProcessor.isPsirtClosureNotification(body));
+    }
+
+    @Test
+    void isPsirtClosureNotification_returnsFalseForCveAssignment() {
+        String body = "The assigned CVE ID is CVE-2026-9999. Please confirm the details.";
+        assertFalse(MailProcessor.isPsirtClosureNotification(body));
+    }
+
+    @Test
+    void isPsirtClosureNotification_returnsFalseForTicketRefOnly() {
+        String body = "Your request PSIRTSUPT-21634 has been updated with new information.";
+        assertFalse(MailProcessor.isPsirtClosureNotification(body));
+    }
+
+    @Test
+    void isPsirtClosureNotification_returnsFalseForClosurePhraseOnly() {
+        String body = "This request is now closed. Thank you.";
+        assertFalse(MailProcessor.isPsirtClosureNotification(body));
+    }
+
+    @Test
+    void isPsirtClosureNotification_returnsFalseForNullBody() {
+        assertFalse(MailProcessor.isPsirtClosureNotification(null));
+    }
+
+    @Test
+    void isPsirtClosureNotification_returnsFalseForBlankBody() {
+        assertFalse(MailProcessor.isPsirtClosureNotification(""));
     }
 
     @SuppressWarnings("unchecked")
